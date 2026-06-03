@@ -24,6 +24,16 @@ sections:
     - $ref: '#/macros/longitudinal'
     enablement:
     - $ref: '#/macros/longitudinal'
+  - key: RadarDistance
+    widget: toggle
+    title: Radar Distance Anticipator
+    description: Use the secondary radar lead to anticipate distant traffic and lift gas / apply gentle brake earlier than
+      the MPC would on its own. Also smooths brief radar lead drop-outs so the MPC does not build panic brake on flicker.
+      Aims for earlier, smoother decel with no late hard braking.
+    visibility:
+    - $ref: '#/macros/longitudinal'
+    enablement:
+    - $ref: '#/macros/longitudinal'
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal
