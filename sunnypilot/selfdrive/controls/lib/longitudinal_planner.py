@@ -102,7 +102,9 @@ class LongitudinalPlannerSP:
     v_ego = sm['carState'].vEgo
     force_decel = sm['controlsState'].forceDecel
     value = self.accel_controller.shape_decel(v_ego, value, radarstate, should_stop, force_decel)
-    return max(value, self.accel_controller.get_min_accel(v_ego, radarstate, should_stop, force_decel))
+    accel_min = self.accel_controller.get_output_min_accel(
+      v_ego, radarstate, self.is_e2e(sm), should_stop, force_decel)
+    return max(value, accel_min)
 
   def _release_rate(self) -> float:
     rs = self._smoothed_radarstate
@@ -155,8 +157,12 @@ class LongitudinalPlannerSP:
     return None
 
   def update_accel_clip(self, accel_clip: list[float], should_stop: bool, force_decel: bool) -> list[float]:
-    if self.accel_controller.is_enabled() and (should_stop or force_decel):
-      accel_clip[0] = ACCEL_MIN
+    if self.accel_controller.is_enabled():
+      sm = self._last_plan_sm
+      radarstate = self._smoothed_radarstate
+      v_ego = sm['carState'].vEgo
+      accel_clip[0] = self.accel_controller.get_output_min_accel(
+        v_ego, radarstate, self.is_e2e(sm), should_stop, force_decel)
     return accel_clip
 
   def get_t_follow(self) -> float | None:

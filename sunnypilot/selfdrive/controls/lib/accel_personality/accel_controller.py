@@ -216,6 +216,12 @@ class AccelPersonalityController:
       return profile_min
     return min(profile_min, risk_min)
 
+  def get_output_min_accel(self, v_ego: float, radarstate=None, e2e: bool = False,
+                           should_stop: bool = False, force_decel: bool = False) -> float:
+    if e2e:
+      return ACCEL_MIN
+    return self.get_min_accel(v_ego, radarstate, should_stop, force_decel)
+
   def get_mpc_profile(self, v_ego: float, radarstate=None, should_stop: bool = False, force_decel: bool = False) -> LeadMpcProfile:
     accel_max = self.get_max_accel(v_ego)
     t_follow = self.get_t_follow()
