@@ -17,7 +17,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolve
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelPersonalityController
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpcSP
 from openpilot.sunnypilot.selfdrive.controls.lib.radar_distance.radar_distance import RadarDistanceController
+from opendbc.car.interfaces import ACCEL_MIN
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
@@ -26,8 +29,9 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
     self.events_sp = EventsSP()
-    self.resolver = SpeedLimitResolver()
-    self.dec = DynamicExperimentalController(CP, mpc)
+    self.accel_controller = AccelPersonalityController()
+    self.mpc = LongitudinalMpcSP(mpc, self.accel_controller)
+    self.dec = DynamicExperimentalController(CP, self.mpc)
     self.radar_distance = RadarDistanceController()
     self.sm_sp = messaging.SubMaster(['liveTracks'])
     self.scc = SmartCruiseControl()
@@ -38,8 +42,51 @@ class LongitudinalPlannerSP:
     self.e2e_alerts_helper = E2EAlertsHelper()
 
     self.output_v_target = 0.
-    self.output_a_target = 0.
+    self._output_a_target = 0.
+    self._last_plan_sm = None
+    self._mpc_profile = None
     self._smoothed_radarstate = None
+
+  @property
+  def output_a_target(self) -> float:
+    return self._output_a_target
+
+  def _apply_accel_personality_decel(self, value: float) -> float:
+    if not self.accel_controller.is_enabled():
+      return value
+
+    sm = self._last_plan_sm
+    if sm is None:
+      return value
+
+    radarstate = self._smoothed_radarstate
+    should_stop = bool(self.output_should_stop)
+    v_ego = sm['carState'].vEgo
+    force_decel = sm['controlsState'].forceDecel
+    value = self.accel_controller.shape_decel(v_ego, value, radarstate, should_stop, force_decel)
+    return max(value, self.accel_controller.get_min_accel(v_ego, radarstate, should_stop, force_decel))
+
+  def _set_mpc_profile(self, v_ego: float) -> None:
+    sm = self._last_plan_sm
+    if sm is None:
+      return
+
+    radarstate = self._smoothed_radarstate
+    if radarstate is None:
+      radarstate = self.smooth_radarstate(sm['radarState'])
+
+    self._mpc_profile = self.accel_controller.get_mpc_profile(
+      v_ego, radarstate, should_stop=self.output_should_stop, force_decel=sm['controlsState'].forceDecel)
+    self.mpc.set_profile(self._mpc_profile)
+
+  @output_a_target.setter
+  def output_a_target(self, value: float) -> None:
+    value = float(value)
+    if not self.accel_controller.is_enabled():
+      self._output_a_target = value
+      return
+    value = self._apply_accel_personality_decel(value)
+    self._output_a_target = value
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -47,6 +94,28 @@ class LongitudinalPlannerSP:
       return experimental_mode
 
     return experimental_mode and self.dec.mode() == "blended"
+
+  def get_accel_clip(self, v_ego: float) -> list[float] | None:
+    if self.accel_controller.is_enabled():
+      self._set_mpc_profile(v_ego)
+      if self._mpc_profile is not None:
+        return [self._mpc_profile.accel_min, self._mpc_profile.accel_max]
+      return [ACCEL_MIN, self.accel_controller.get_max_accel(v_ego)]
+    return None
+
+  def get_t_follow(self) -> float | None:
+    if self.accel_controller.is_enabled():
+      if self._mpc_profile is not None:
+        return self._mpc_profile.t_follow
+      return self.accel_controller.get_t_follow()
+    return None
+
+  def get_jerk_scale(self) -> float:
+    if self.accel_controller.is_enabled():
+      if self._mpc_profile is not None:
+        return self._mpc_profile.jerk_scale
+      return self.accel_controller.get_jerk_scale()
+    return 1.0
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
@@ -75,8 +144,8 @@ class LongitudinalPlannerSP:
     }
 
     self.source = min(targets, key=lambda k: targets[k][0])
-    self.output_v_target, self.output_a_target = targets[self.source]
-    return self.output_v_target, self.output_a_target
+    self.output_v_target, a_target = targets[self.source]
+    return self.output_v_target, a_target
 
   def smooth_radarstate(self, radarstate):
     if self._smoothed_radarstate is None:
@@ -84,11 +153,15 @@ class LongitudinalPlannerSP:
     return self._smoothed_radarstate
 
   def update(self, sm: messaging.SubMaster) -> None:
+    self._last_plan_sm = sm
+    self._mpc_profile = None
+    self.mpc.set_profile(None)
     self._smoothed_radarstate = None
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
     self.sm_sp.update(0)
+    self.accel_controller.update(sm)
     self.radar_distance.update(sm, self.sm_sp)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
@@ -107,6 +180,8 @@ class LongitudinalPlannerSP:
     dec.state = DecState.blended if self.dec.mode() == 'blended' else DecState.acc
     dec.enabled = self.dec.enabled()
     dec.active = self.dec.active()
+
+    longitudinalPlanSP.accelPersonality = int(self.accel_controller.get_accel_personality())
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl
