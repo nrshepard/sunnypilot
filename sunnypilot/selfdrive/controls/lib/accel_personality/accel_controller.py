@@ -56,7 +56,9 @@ LEAD_SAFETY_SCALE = 1.25
 LEAD_RELEASE_TTC = 3.0
 LEAD_CRITICAL_TTC = 1.25
 LEAD_CRITICAL_LEAD_BRAKE = 2.0
+LEAD_CRITICAL_BRAKE_TTC = 5.0
 LEAD_CRITICAL_STOCK_FRAC = 0.75
+LEAD_CRITICAL_HOLD_FRAMES = max(1, int(0.8 / DT_MDL))
 LEAD_PREBRAKE_CLOSING = 0.45
 LEAD_PREBRAKE_DECEL = 0.08
 LEAD_PREBRAKE_TTC = 5.0
@@ -95,6 +97,9 @@ class AccelPersonalityController:
     self._personality = val if val is not None else AccelPersonality.normal
     self._enabled = self.params.get_bool('AccelPersonalityEnabled')
     self._v_cruise = 0.0
+    self._critical_hold = 0
+    self._critical_target = 0.0
+    self._critical_hold_frame = -1
 
   def update(self, sm=None):
     self.frame += 1
@@ -131,6 +136,8 @@ class AccelPersonalityController:
   def set_enabled(self, enabled: bool):
     self._enabled = bool(enabled)
     self.params.put_bool('AccelPersonalityEnabled', self._enabled)
+    if not self._enabled:
+      self._clear_critical_hold()
 
   def toggle_enabled(self) -> bool:
     self.set_enabled(not self._enabled)
@@ -143,6 +150,7 @@ class AccelPersonalityController:
     self.params.put('AccelPersonality', self._personality)
     self.frame = 0
     self._v_cruise = 0.0
+    self._clear_critical_hold()
 
   def get_max_accel(self, v_ego: float) -> float:
     base = float(np.interp(max(0.0, v_ego), A_MAX_BP, A_MAX_V[self._personality]))
@@ -172,7 +180,7 @@ class AccelPersonalityController:
     closing_load = closing + 0.4 * lead_brake
     ttc = usable_gap / closing_load if closing_load > 0.1 else float('inf')
     required_decel = closing * closing / (2.0 * usable_gap) + LEAD_BRAKE_WEIGHT * lead_brake
-    critical = (lead.fcw or lead_brake > LEAD_CRITICAL_LEAD_BRAKE or
+    critical = (lead.fcw or (lead_brake > LEAD_CRITICAL_LEAD_BRAKE and ttc < LEAD_CRITICAL_BRAKE_TTC) or
                 (ttc < LEAD_CRITICAL_TTC and closing > 0.3) or required_decel > abs(ACCEL_MIN) * LEAD_CRITICAL_STOCK_FRAC)
 
     return LeadBrakeState(closing=closing, critical=critical, required_decel=required_decel, ttc=ttc)
@@ -184,6 +192,30 @@ class AccelPersonalityController:
                           self._lead_brake_state(radarstate.leadTwo, v_ego)) if s is not None]
     return max(states, key=lambda s: (s.critical, s.required_decel)) if states else None
 
+  def _clear_critical_hold(self) -> None:
+    self._critical_hold = 0
+    self._critical_target = 0.0
+    self._critical_hold_frame = -1
+
+  def _update_critical_hold(self, lead_state: LeadBrakeState | None) -> bool:
+    if lead_state is not None and lead_state.critical:
+      self._critical_hold = LEAD_CRITICAL_HOLD_FRAMES
+      self._critical_target = self._lead_decel_target(lead_state)
+      self._critical_hold_frame = self.frame
+      return True
+
+    if lead_state is not None and lead_state.closing <= LEAD_PREBRAKE_CLOSING:
+      self._clear_critical_hold()
+      return False
+
+    if self._critical_hold > 0 and self._critical_hold_frame != self.frame:
+      self._critical_hold -= 1
+      self._critical_hold_frame = self.frame
+      if self._critical_hold <= 0:
+        self._clear_critical_hold()
+
+    return self._critical_hold > 0
+
   def get_min_accel(self, v_ego: float, radarstate=None, should_stop: bool = False, force_decel: bool = False) -> float:
     if not self._enabled:
       return ACCEL_MIN
@@ -192,9 +224,10 @@ class AccelPersonalityController:
 
     profile_min = self.get_profile_min_accel(v_ego)
     lead_state = self._best_lead_brake_state(radarstate, v_ego)
+    critical_hold = self._update_critical_hold(lead_state)
     if lead_state is None:
-      return profile_min
-    if lead_state.critical:
+      return ACCEL_MIN if critical_hold else profile_min
+    if critical_hold:
       return ACCEL_MIN
     if lead_state.closing > LEAD_FAST_CLOSING and lead_state.ttc < LEAD_FAST_PREBRAKE_TTC:
       return min(profile_min, self._lead_decel_target(lead_state))
@@ -226,11 +259,15 @@ class AccelPersonalityController:
       return a_target
 
     lead_state = self._best_lead_brake_state(radarstate, v_ego)
-    if lead_state is None:
+    critical_hold = self._update_critical_hold(lead_state)
+    if lead_state is None and not critical_hold:
       return a_target
 
     shaped = float(a_target)
-    urgent = lead_state.critical or (lead_state.closing > LEAD_FAST_CLOSING and lead_state.ttc < LEAD_FAST_PREBRAKE_TTC)
+    if critical_hold:
+      return min(shaped, self._critical_target)
+
+    urgent = lead_state.closing > LEAD_FAST_CLOSING and lead_state.ttc < LEAD_FAST_PREBRAKE_TTC
     if urgent:
       shaped = min(shaped, self._lead_decel_target(lead_state))
     elif lead_state.closing > LEAD_PREBRAKE_CLOSING and lead_state.required_decel > LEAD_PREBRAKE_DECEL and lead_state.ttc < LEAD_PREBRAKE_TTC:

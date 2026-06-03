@@ -9,6 +9,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   AccelPersonality,
   A_MAX_V,
   A_MIN_V,
+  LEAD_CRITICAL_HOLD_FRAMES,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpcSP
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
@@ -271,6 +272,16 @@ class TestBrakeFloor:
     lead = FakeLead(status=True, d_rel=8.0, v_lead=1.0)
     assert c.get_min_accel(16.0, _rs(lead)) == ACCEL_MIN
 
+  def test_far_hard_braking_lead_does_not_use_stock_floor(self):
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=110.0, v_rel=-1.0, v_lead=24.0, a_lead=-3.0)
+    assert c.get_min_accel(25.0, _rs(lead)) > ACCEL_MIN
+
+  def test_close_hard_braking_lead_uses_stock_floor(self):
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=18.0, v_rel=-2.0, v_lead=18.0, a_lead=-3.0)
+    assert c.get_min_accel(20.0, _rs(lead)) == ACCEL_MIN
+
   def test_stop_and_force_decel_use_stock_floor(self):
     c = _make(AccelPersonality.normal)
     assert c.get_min_accel(8.0, should_stop=True) == ACCEL_MIN
@@ -330,6 +341,42 @@ class TestBrakeShaping:
 
     assert c.get_min_accel(23.8, _rs(lead)) == ACCEL_MIN
     assert ACCEL_MIN <= shaped < -2.5
+
+  def test_critical_hold_keeps_decel_target_through_flicker(self):
+    c = _make(AccelPersonality.eco)
+    critical = FakeLead(status=True, d_rel=78.0, v_rel=-19.5, v_lead=4.3)
+    benign = FakeLead(status=True, d_rel=120.0, v_rel=-7.0, v_lead=16.0)
+
+    first = c.shape_decel(23.8, -1.2, _rs(critical))
+    c.frame += 1
+    held = c.shape_decel(23.8, -0.4, _rs(benign))
+
+    assert c.get_min_accel(23.8, _rs(benign)) == ACCEL_MIN
+    assert held == first
+
+  def test_critical_hold_releases_after_window(self):
+    c = _make(AccelPersonality.eco)
+    critical = FakeLead(status=True, d_rel=78.0, v_rel=-19.5, v_lead=4.3)
+    benign = FakeLead(status=True, d_rel=120.0, v_rel=-7.0, v_lead=16.0)
+
+    c.shape_decel(23.8, -1.2, _rs(critical))
+    for _ in range(LEAD_CRITICAL_HOLD_FRAMES + 1):
+      c.frame += 1
+      c.get_min_accel(23.8, _rs(benign))
+
+    assert c.get_min_accel(23.8, _rs(benign)) > ACCEL_MIN
+    assert c.shape_decel(23.8, -0.4, _rs(benign)) == -0.4
+
+  def test_critical_hold_clears_when_lead_opens(self):
+    c = _make(AccelPersonality.eco)
+    critical = FakeLead(status=True, d_rel=78.0, v_rel=-19.5, v_lead=4.3)
+    opening = FakeLead(status=True, d_rel=90.0, v_rel=1.0, v_lead=24.8)
+
+    c.shape_decel(23.8, -1.2, _rs(critical))
+    c.frame += 1
+
+    assert c.get_min_accel(23.8, _rs(opening)) > ACCEL_MIN
+    assert c.shape_decel(23.8, -0.4, _rs(opening)) == -0.4
 
   def test_disabled_shape_is_noop(self):
     c = _make(AccelPersonality.normal)
