@@ -15,13 +15,15 @@ _HOLD_FRAMES = 16
 _STATUS_WINDOW = 20
 _STABILITY_FLIPS_FULL = 6.0
 
-# Lead target-switch slew: on a sudden closer dRel jump, lag reported dRel and decay to
-# truth (true vRel/vLead/aLeadK pass through); urgent switches pass through.
-_SWITCH_STEP_THRESH = 5.0        # m, single-frame closer jump = switch
+# Lead target-switch slew: on a sudden dRel jump, lag reported dRel and decay to truth.
+# True vRel/vLead/aLeadK pass through; urgent switches do not lag.
+_SWITCH_STEP_THRESH = 5.0        # m, single-frame jump = switch
 _SWITCH_TTC_MIN = 4.0            # s, below this = urgent, no masking
+_SWITCH_CLOSER_TTC_MIN = 6.0     # s, nearer target switches need quicker reaction
 _SWITCH_PASSTHROUGH_VREL = -8.0  # m/s, faster closing = no masking
 _SLEW_DECAY = 0.88               # per-frame offset decay
 _SLEW_OFFSET_MAX = 25.0          # m
+_SLEW_CLOSER_OFFSET_MAX = 8.0    # m
 _SLEW_OFFSET_EPS = 0.5           # m, snap to zero below this
 
 # Phantom-lead mask: a fresh low-modelProb close lead is usually a radar ghost; mask it
@@ -98,11 +100,7 @@ class _RadarStateProxy:
 
 
 class LeadPersistence:
-  """Internal helper. Hold last-known leadOne/leadTwo alive for HOLD_FRAMES
-  after a status drop, so the MPC view of radarState ignores brief flicker.
-  Also masks freshly-acquired close-range low-confidence phantom leads so the
-  planner doesn't demand emergency brake on radar ghosts.
-  No own param — owner (RadarDistanceController) gates via force_enabled."""
+  """Smooth the MPC's radarState view for lead flicker, phantoms, and target switches."""
 
   def __init__(self):
     self._last_one: _LeadSnap | None = None
@@ -176,28 +174,43 @@ class LeadPersistence:
       self._stability = 1.0
 
   def _compute_switch_slew(self, one, one_valid: bool) -> None:
-    """Carry a decaying dRel lag across a leadOne target-switch; urgent switches pass through."""
+    """Apply decaying dRel lag across a leadOne target switch."""
     if not one_valid:
-      self._slew_offset = 0.0
-      self._reported_one_dRel = None
-      self._prev_raw_one_dRel = None
-      self._prev_raw_one_vRel = 0.0
+      # held across a status gap: anchor on the held lead so a post-gap switch still trips
+      if self._alive_one > 0 and self._last_one is not None:
+        self._slew_offset = self._slew_offset * _SLEW_DECAY if abs(self._slew_offset) > _SLEW_OFFSET_EPS else 0.0
+        self._reported_one_dRel = self._last_one.dRel + self._slew_offset
+        self._prev_raw_one_dRel = self._last_one.dRel
+        self._prev_raw_one_vRel = self._last_one.vRel
+      else:
+        self._slew_offset = 0.0
+        self._reported_one_dRel = None
+        self._prev_raw_one_dRel = None
+        self._prev_raw_one_vRel = 0.0
       return
 
     raw_d = float(one.dRel)
     raw_v = float(one.vRel)
     ttc = raw_d / max(0.1, -raw_v) if raw_v < 0.0 else float('inf')
-    urgent = ttc <= _SWITCH_TTC_MIN or raw_v <= _SWITCH_PASSTHROUGH_VREL
+    closer_switch = False
+    farther_switch = False
+    if self._prev_raw_one_dRel is not None and self._reported_one_dRel is not None:
+      expected = self._prev_raw_one_dRel + self._prev_raw_one_vRel * DT_MDL
+      closer_switch = raw_d < expected - _SWITCH_STEP_THRESH
+      farther_switch = raw_d > expected + _SWITCH_STEP_THRESH
+    urgent = (ttc <= _SWITCH_TTC_MIN or raw_v <= _SWITCH_PASSTHROUGH_VREL or
+              (closer_switch and raw_v < 0.0 and ttc <= _SWITCH_CLOSER_TTC_MIN))
 
     if urgent:
       self._slew_offset = 0.0
     else:
-      self._slew_offset = self._slew_offset * _SLEW_DECAY if self._slew_offset > _SLEW_OFFSET_EPS else 0.0
-      if self._prev_raw_one_dRel is not None and self._reported_one_dRel is not None:
-        expected = self._prev_raw_one_dRel + self._prev_raw_one_vRel * DT_MDL
-        if raw_d < expected - _SWITCH_STEP_THRESH:  # closer jump = switch
-          new_offset = self._reported_one_dRel - raw_d
-          self._slew_offset = min(_SLEW_OFFSET_MAX, max(self._slew_offset, new_offset))
+      self._slew_offset = self._slew_offset * _SLEW_DECAY if abs(self._slew_offset) > _SLEW_OFFSET_EPS else 0.0
+      if closer_switch:
+        new_offset = self._reported_one_dRel - raw_d
+        self._slew_offset = min(_SLEW_CLOSER_OFFSET_MAX, max(self._slew_offset, new_offset))
+      elif farther_switch:
+        new_offset = self._reported_one_dRel - raw_d
+        self._slew_offset = max(-_SLEW_OFFSET_MAX, min(self._slew_offset, new_offset))
 
     self._reported_one_dRel = raw_d + self._slew_offset
     self._prev_raw_one_dRel = raw_d
@@ -209,7 +222,7 @@ class LeadPersistence:
             and float(lead.modelProb) < _PHANTOM_MODELPROB_MAX
             and float(lead.dRel) < _PHANTOM_DREL_MAX):
       return False
-    # don't mask an urgently-closing lead
+    # Do not mask an urgently-closing lead.
     v_rel = float(lead.vRel)
     if v_rel <= _SWITCH_PASSTHROUGH_VREL:
       return False
@@ -228,10 +241,10 @@ class LeadPersistence:
       l1 = _LeadProxyMasked()
     elif not radarstate.leadOne.status and self._alive_one > 0 and self._last_one is not None:
       l1 = _LeadProxy(self._last_one)
-    elif radarstate.leadOne.status and self._slew_offset > _SLEW_OFFSET_EPS:
+    elif radarstate.leadOne.status and abs(self._slew_offset) > _SLEW_OFFSET_EPS:
       # target-switch slew: lag dRel only, true vRel/vLead/aLeadK pass through
       snap = self._snap(radarstate.leadOne)
-      snap.dRel = snap.dRel + self._slew_offset
+      snap.dRel = max(0.0, snap.dRel + self._slew_offset)
       l1 = _LeadProxy(snap)
 
     if self._is_phantom(radarstate.leadTwo) and self._alive_two == 0:

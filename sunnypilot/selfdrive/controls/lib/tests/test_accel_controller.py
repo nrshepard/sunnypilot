@@ -9,8 +9,6 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   AccelPersonality,
   A_MAX_V,
   A_MIN_V,
-  LEAD_COAST_DECEL,
-  LEAD_MPC_T_FOLLOW_MIN,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpcSP
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
@@ -176,11 +174,13 @@ class TestJerkScale:
 
 
 class TestMpcProfile:
-  def test_far_closing_lead_lowers_follow_distance(self):
+  def test_closing_lead_profile_is_static_personality(self):
+    # no post-MPC t_follow relief: profile is the per-personality static box + lead-aware floor
     c = _make(AccelPersonality.eco)
     lead = FakeLead(status=True, d_rel=60.0, v_lead=11.0)
     profile = c.get_mpc_profile(12.0, _rs(lead))
-    assert LEAD_MPC_T_FOLLOW_MIN <= profile.t_follow < c.get_t_follow()
+    assert profile.t_follow == c.get_t_follow()
+    assert profile.jerk_scale == c.get_jerk_scale()
     assert profile.accel_min == c.get_min_accel(12.0, _rs(lead))
     assert profile.accel_max == c.get_max_accel(12.0)
 
@@ -292,12 +292,10 @@ class TestBrakeFloor:
 
 
 class TestBrakeShaping:
-  def test_far_closing_lead_coasts(self):
+  def test_far_closing_lead_brake_untouched(self):
     c = _make(AccelPersonality.eco)
     lead = FakeLead(status=True, d_rel=60.0, v_lead=11.0)
-    shaped = c.shape_decel(12.0, -2.0, _rs(lead))
-    assert shaped > c.get_profile_min_accel(12.0)
-    assert shaped >= -LEAD_COAST_DECEL
+    assert c.shape_decel(12.0, -2.0, _rs(lead)) == -2.0
 
   def test_non_closing_lead_brake_untouched(self):
     c = _make(AccelPersonality.eco)
@@ -308,9 +306,30 @@ class TestBrakeShaping:
     c = _make(AccelPersonality.normal)
     lead = FakeLead(status=True, d_rel=24.0, v_lead=10.0)
     shaped = c.shape_decel(14.0, 0.1, _rs(lead))
-    assert shaped < 0.1
-    assert shaped < -LEAD_COAST_DECEL
+    assert shaped < -0.1
     assert shaped >= c.get_min_accel(14.0, _rs(lead))
+
+  def test_fast_closing_lead_brakes_before_critical_ttc(self):
+    c = _make(AccelPersonality.eco)
+    lead = FakeLead(status=True, d_rel=95.0, v_rel=-8.2, v_lead=20.0)
+    shaped = c.shape_decel(28.4, -0.2, _rs(lead))
+
+    assert shaped < -1.2
+    assert shaped >= c.get_min_accel(28.4, _rs(lead))
+
+  def test_far_fast_closing_lead_does_not_force_brake(self):
+    c = _make(AccelPersonality.eco)
+    lead = FakeLead(status=True, d_rel=130.0, v_rel=-8.2, v_lead=20.0)
+
+    assert c.shape_decel(28.4, -0.2, _rs(lead)) == -0.2
+
+  def test_critical_fast_closing_lead_drives_deeper_than_soft_mpc(self):
+    c = _make(AccelPersonality.eco)
+    lead = FakeLead(status=True, d_rel=78.0, v_rel=-19.5, v_lead=4.3)
+    shaped = c.shape_decel(23.8, -1.2, _rs(lead))
+
+    assert c.get_min_accel(23.8, _rs(lead)) == ACCEL_MIN
+    assert ACCEL_MIN <= shaped < -2.5
 
   def test_disabled_shape_is_noop(self):
     c = _make(AccelPersonality.normal)
@@ -345,6 +364,14 @@ class TestPlannerBrakeHook:
     p = object.__new__(LongitudinalPlannerSP)
     p._last_plan_sm = _sm(v_ego=12.0)
     p._smoothed_radarstate = _rs()
+    p.output_should_stop = False
+
+    assert p._brake_rate() == JERK_BRAKE_COMFORT
+
+  def test_brake_rate_is_comfort_for_mild_closing_lead(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p._last_plan_sm = _sm(v_ego=12.0)
+    p._smoothed_radarstate = _rs(FakeLead(status=True, v_rel=-2.5))
     p.output_should_stop = False
 
     assert p._brake_rate() == JERK_BRAKE_COMFORT

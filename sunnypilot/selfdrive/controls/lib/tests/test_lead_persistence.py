@@ -50,7 +50,7 @@ class TestLeadPersistence:
     for _ in range(3):
       lp.update(raw)
     out = lp.smooth(raw)
-    # leadOne still truly present → passthrough (or wrapper with same .status=True)
+    # leadOne still truly present: passthrough or wrapper with same .status=True
     assert out.leadOne.status is True
     assert out.leadOne.dRel == 30.0
 
@@ -194,27 +194,27 @@ class TestLeadSwitchSlew:
     assert out.leadOne.dRel == 45.0
     assert lp.slew_offset == 0.0
 
-  def test_switch_lags_dRel_keeps_true_vrel(self):
+  def test_closer_cut_in_passes_through_when_ttc_short(self):
     lp = _make()
     self._settle_far(lp, d=45.0)
-    # switch to a nearer car: 28 m, closing -5 (TTC 5.6 s > 4) -> non-urgent
     out = _step(lp, FakeLead(status=True, d_rel=28.0, v_rel=-5.0, v_lead=19.0))
-    assert out.leadOne.dRel > 40.0          # reported stays continuous, not stepped to 28
-    assert out.leadOne.dRel >= 28.0          # never under-reports distance
-    assert out.leadOne.vRel == -5.0          # true closing speed passes through
+    assert out.leadOne.dRel == 28.0
+    assert lp.slew_offset == 0.0
+    assert out.leadOne.vRel == -5.0
     assert out.leadOne.vLead == 19.0
 
-  def test_switch_converges_to_truth(self):
+  def test_far_closer_switch_lag_is_bounded_and_converges(self):
     lp = _make()
-    self._settle_far(lp, d=45.0)
-    out = _step(lp, FakeLead(status=True, d_rel=28.0, v_rel=-5.0, v_lead=19.0))
+    self._settle_far(lp, d=60.0)
+    out = _step(lp, FakeLead(status=True, d_rel=45.0, v_rel=-2.0, v_lead=20.0))
+    assert 45.0 < out.leadOne.dRel <= 53.0
     prev = out.leadOne.dRel
     for _ in range(40):
-      out = _step(lp, FakeLead(status=True, d_rel=28.0, v_rel=-5.0, v_lead=19.0))
+      out = _step(lp, FakeLead(status=True, d_rel=45.0, v_rel=-2.0, v_lead=20.0))
       assert out.leadOne.dRel <= prev + 1e-6      # monotonically eases down
-      assert out.leadOne.dRel >= 28.0 - 1e-6      # never below truth
+      assert out.leadOne.dRel >= 45.0 - 1e-6      # never below truth
       prev = out.leadOne.dRel
-    assert abs(out.leadOne.dRel - 28.0) < 1.0     # converged to real distance
+    assert abs(out.leadOne.dRel - 45.0) < 1.0     # converged to real distance
 
   def test_urgent_switch_passes_through(self):
     lp = _make()
@@ -242,10 +242,33 @@ class TestLeadSwitchSlew:
       assert out.leadOne.dRel == d
       assert lp.slew_offset == 0.0
 
-  def test_lead_moving_away_not_slewed(self):
+  def test_farther_switch_lags_dRel_eases_off_brake(self):
     lp = _make()
     self._settle_far(lp, d=30.0)
-    # sudden farther jump (lead drops out / switch to far car) -> no brake risk, no lag
     out = _step(lp, FakeLead(status=True, d_rel=60.0, v_rel=-1.0, v_lead=24.0))
-    assert out.leadOne.dRel == 60.0
-    assert lp.slew_offset == 0.0
+    assert out.leadOne.dRel < 60.0
+    assert out.leadOne.dRel >= 30.0
+    assert out.leadOne.vRel == -1.0
+    assert lp.slew_offset < 0.0
+
+  def test_farther_switch_converges_to_truth(self):
+    lp = _make()
+    self._settle_far(lp, d=30.0)
+    out = _step(lp, FakeLead(status=True, d_rel=60.0, v_rel=-1.0, v_lead=24.0))
+    prev = out.leadOne.dRel
+    for _ in range(60):
+      out = _step(lp, FakeLead(status=True, d_rel=60.0, v_rel=-1.0, v_lead=24.0))
+      assert out.leadOne.dRel >= prev - 1e-6
+      assert out.leadOne.dRel <= 60.0 + 1e-6
+      prev = out.leadOne.dRel
+    assert abs(out.leadOne.dRel - 60.0) < 1.0
+
+  def test_gradual_pull_away_not_slewed(self):
+    lp = _make()
+    d = 30.0
+    self._settle_far(lp, d=d)
+    for _ in range(20):
+      d += 0.25  # ~5 m/s opening at 20 Hz, continuous (not a switch)
+      out = _step(lp, FakeLead(status=True, d_rel=d, v_rel=5.0, v_lead=25.0))
+      assert out.leadOne.dRel == d
+      assert lp.slew_offset == 0.0

@@ -28,11 +28,11 @@ from opendbc.car.interfaces import ACCEL_MIN
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
-JERK_RELEASE = 1.8
-JERK_RELEASE_CLOSING = 0.8
-JERK_BRAKE = 8.0
-JERK_BRAKE_COMFORT = 4.0
-CLOSING_VREL = -2.0
+JERK_RELEASE = 1.5
+JERK_RELEASE_CLOSING = 0.7
+JERK_BRAKE = 7.0
+JERK_BRAKE_COMFORT = 3.2
+CLOSING_VREL = -3.0
 
 
 def rate_limit_a_target(prev: float, value: float, release_rate: float = JERK_RELEASE, brake_rate: float = JERK_BRAKE) -> float:
