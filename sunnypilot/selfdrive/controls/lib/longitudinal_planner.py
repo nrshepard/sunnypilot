@@ -28,16 +28,17 @@ from opendbc.car.interfaces import ACCEL_MIN
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
-JERK_RELEASE = 2.5
+JERK_RELEASE = 1.8
 JERK_RELEASE_CLOSING = 0.8
 JERK_BRAKE = 8.0
+JERK_BRAKE_COMFORT = 4.0
 CLOSING_VREL = -2.0
 
 
-def rate_limit_a_target(prev: float, value: float, release_rate: float = JERK_RELEASE) -> float:
+def rate_limit_a_target(prev: float, value: float, release_rate: float = JERK_RELEASE, brake_rate: float = JERK_BRAKE) -> float:
   if value > prev:
     return min(value, prev + release_rate * DT_MDL)
-  return max(value, prev - JERK_BRAKE * DT_MDL)
+  return max(value, prev - brake_rate * DT_MDL)
 
 
 # stop-hold: once stopped, hold the stop and suppress creep until a sustained go, so the
@@ -107,16 +108,25 @@ class LongitudinalPlannerSP:
     return max(value, accel_min)
 
   def _release_rate(self) -> float:
+    return JERK_RELEASE_CLOSING if self._lead_closing() else JERK_RELEASE
+
+  def _brake_rate(self) -> float:
+    sm = self._last_plan_sm
+    if sm is None:
+      return JERK_BRAKE_COMFORT
+    if self.output_should_stop or sm['controlsState'].forceDecel:
+      return JERK_BRAKE
+    return JERK_BRAKE if self._lead_closing() else JERK_BRAKE_COMFORT
+
+  def _lead_closing(self) -> bool:
     rs = self._smoothed_radarstate
     if rs is None:
-      return JERK_RELEASE
+      return False
 
     lead_one = rs.leadOne
     lead_two = rs.leadTwo
-    if ((lead_one.status and lead_one.vRel < CLOSING_VREL) or
-        (lead_two.status and lead_two.vRel < CLOSING_VREL)):
-      return JERK_RELEASE_CLOSING
-    return JERK_RELEASE
+    return ((lead_one.status and lead_one.vRel < CLOSING_VREL) or
+            (lead_two.status and lead_two.vRel < CLOSING_VREL))
 
   def _set_mpc_profile(self, v_ego: float) -> None:
     sm = self._last_plan_sm
@@ -139,7 +149,7 @@ class LongitudinalPlannerSP:
         self._output_a_target = value
         return
       value = self._apply_accel_personality_decel(value)
-      self._output_a_target = rate_limit_a_target(self._output_a_target, value, self._release_rate())
+      self._output_a_target = rate_limit_a_target(self._output_a_target, value, self._release_rate(), self._brake_rate())
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode

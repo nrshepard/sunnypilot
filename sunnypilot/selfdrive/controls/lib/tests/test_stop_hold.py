@@ -11,6 +11,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   JERK_RELEASE,
   JERK_RELEASE_CLOSING,
   JERK_BRAKE,
+  JERK_BRAKE_COMFORT,
 )
 from openpilot.common.realtime import DT_MDL
 
@@ -21,6 +22,9 @@ class TestRateLimitATarget:
 
   def test_brake_capped(self):
     assert abs(rate_limit_a_target(0.0, -3.5) - (-JERK_BRAKE * DT_MDL)) < 1e-9
+
+  def test_custom_brake_rate(self):
+    assert abs(rate_limit_a_target(0.0, -3.5, brake_rate=JERK_BRAKE_COMFORT) - (-JERK_BRAKE_COMFORT * DT_MDL)) < 1e-9
 
   def test_small_change_passthrough(self):
     assert rate_limit_a_target(-1.0, -1.02) == -1.02

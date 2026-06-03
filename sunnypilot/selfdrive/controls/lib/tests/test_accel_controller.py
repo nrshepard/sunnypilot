@@ -17,7 +17,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlannerSP,
   JERK_RELEASE,
   JERK_RELEASE_CLOSING,
+  JERK_BRAKE,
+  JERK_BRAKE_COMFORT,
 )
+from openpilot.common.realtime import DT_MDL
 from opendbc.car.interfaces import ACCEL_MIN
 
 PERSONALITIES = (AccelPersonality.eco, AccelPersonality.normal, AccelPersonality.sport)
@@ -337,6 +340,56 @@ class TestPlannerBrakeHook:
     assert p._release_rate() == JERK_RELEASE
     p._smoothed_radarstate = None
     assert p._release_rate() == JERK_RELEASE
+
+  def test_brake_rate_is_comfort_without_urgency(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p._last_plan_sm = _sm(v_ego=12.0)
+    p._smoothed_radarstate = _rs()
+    p.output_should_stop = False
+
+    assert p._brake_rate() == JERK_BRAKE_COMFORT
+
+  def test_brake_rate_keeps_authority_for_stop(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p._last_plan_sm = _sm(v_ego=12.0)
+    p._smoothed_radarstate = _rs()
+    p.output_should_stop = True
+
+    assert p._brake_rate() == JERK_BRAKE
+
+  def test_brake_rate_keeps_authority_for_closing_lead(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p._last_plan_sm = _sm(v_ego=12.0)
+    p._smoothed_radarstate = _rs(FakeLead(status=True, v_rel=-5.0))
+    p.output_should_stop = False
+
+    assert p._brake_rate() == JERK_BRAKE
+
+  def test_output_target_smooths_comfort_brake(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p.accel_controller = _make(AccelPersonality.eco)
+    p.dec = FakeDec()
+    p._last_plan_sm = _sm(v_ego=12.0)
+    p._smoothed_radarstate = _rs()
+    p.output_should_stop = False
+    p._output_a_target = 0.0
+
+    p.output_a_target = -1.0
+
+    assert abs(p.output_a_target - (-JERK_BRAKE_COMFORT * DT_MDL)) < 1e-9
+
+  def test_output_target_smooths_return_to_accel(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p.accel_controller = _make(AccelPersonality.eco)
+    p.dec = FakeDec()
+    p._last_plan_sm = _sm(v_ego=12.0)
+    p._smoothed_radarstate = _rs()
+    p.output_should_stop = False
+    p._output_a_target = -1.0
+
+    p.output_a_target = 1.0
+
+    assert abs(p.output_a_target - (-1.0 + JERK_RELEASE * DT_MDL)) < 1e-9
 
   def test_mpc_profile_feeds_planner_hooks(self):
     p = object.__new__(LongitudinalPlannerSP)
