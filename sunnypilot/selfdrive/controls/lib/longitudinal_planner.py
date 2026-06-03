@@ -138,7 +138,7 @@ class LongitudinalPlannerSP:
       radarstate = self.smooth_radarstate(sm['radarState'])
 
     self._mpc_profile = self.accel_controller.get_mpc_profile(
-      v_ego, radarstate, should_stop=self.output_should_stop, force_decel=sm['controlsState'].forceDecel)
+      v_ego, radarstate, e2e=self.is_e2e(sm), should_stop=self.output_should_stop, force_decel=sm['controlsState'].forceDecel)
     self.mpc.set_profile(self._mpc_profile)
 
   @output_a_target.setter

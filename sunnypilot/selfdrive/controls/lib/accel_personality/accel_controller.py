@@ -222,12 +222,13 @@ class AccelPersonalityController:
       return ACCEL_MIN
     return self.get_min_accel(v_ego, radarstate, should_stop, force_decel)
 
-  def get_mpc_profile(self, v_ego: float, radarstate=None, should_stop: bool = False, force_decel: bool = False) -> LeadMpcProfile:
+  def get_mpc_profile(self, v_ego: float, radarstate=None, e2e: bool = False, should_stop: bool = False, force_decel: bool = False) -> LeadMpcProfile:
     accel_max = self.get_max_accel(v_ego)
     t_follow = self.get_t_follow()
     jerk_scale = self.get_jerk_scale()
-    accel_min = self.get_min_accel(v_ego, radarstate, should_stop, force_decel)
-    if not self._enabled or should_stop or force_decel:
+    accel_min = self.get_output_min_accel(v_ego, radarstate, e2e, should_stop, force_decel)
+    # blended (model drives), stop, force-decel: full stock braking authority, no lead coast/relief
+    if not self._enabled or e2e or should_stop or force_decel:
       return LeadMpcProfile(accel_min, accel_max, jerk_scale, t_follow)
 
     lead_state = self._best_lead_brake_state(radarstate, v_ego)

@@ -404,6 +404,7 @@ class TestPlannerBrakeHook:
     lead = FakeLead(status=True, d_rel=60.0, v_lead=11.0)
     p = object.__new__(LongitudinalPlannerSP)
     p.accel_controller = _make(AccelPersonality.eco)
+    p.dec = FakeDec()
     p.mpc = FakeMpcProfileSink()
     p._last_plan_sm = _sm(lead, v_ego=12.0)
     p._mpc_profile = None
@@ -418,6 +419,7 @@ class TestPlannerBrakeHook:
   def test_accel_clip_stop_uses_stock_floor(self):
     p = object.__new__(LongitudinalPlannerSP)
     p.accel_controller = _make(AccelPersonality.eco)
+    p.dec = FakeDec()
     p.mpc = FakeMpcProfileSink()
     p._last_plan_sm = _sm(v_ego=8.0)
     p._mpc_profile = None
@@ -425,6 +427,19 @@ class TestPlannerBrakeHook:
     p.output_should_stop = True
 
     assert p.get_accel_clip(8.0)[0] == ACCEL_MIN
+
+  def test_accel_clip_blended_uses_stock_floor(self):
+    lead = FakeLead(status=True, d_rel=60.0, v_lead=11.0)  # would get gentle floor in ACC
+    p = object.__new__(LongitudinalPlannerSP)
+    p.accel_controller = _make(AccelPersonality.eco)
+    p.dec = FakeDec(mode="blended")
+    p.mpc = FakeMpcProfileSink()
+    p._last_plan_sm = _sm(lead, v_ego=12.0)
+    p._mpc_profile = None
+    p._smoothed_radarstate = _rs(lead)
+    p.output_should_stop = False
+
+    assert p.get_accel_clip(12.0)[0] == ACCEL_MIN  # blended -> stock min, model not capped
 
   def test_update_accel_clip_stop_uses_stock_floor(self):
     p = object.__new__(LongitudinalPlannerSP)
