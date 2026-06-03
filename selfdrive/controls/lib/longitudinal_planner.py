@@ -170,8 +170,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
+    output_a_target, self.output_should_stop = self.stop_hold(v_ego, output_a_target, self.output_should_stop)
+
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
+    accel_clip = self.update_accel_clip(accel_clip, self.output_should_stop, force_slow_decel)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 

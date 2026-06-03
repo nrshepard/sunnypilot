@@ -5,6 +5,8 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import math
+
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
@@ -17,6 +19,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolve
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
+from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelPersonalityController
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpcSP
 from openpilot.sunnypilot.selfdrive.controls.lib.radar_distance.radar_distance import RadarDistanceController
@@ -24,6 +27,39 @@ from opendbc.car.interfaces import ACCEL_MIN
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+
+JERK_RELEASE = 2.5
+JERK_RELEASE_CLOSING = 0.8
+JERK_BRAKE = 8.0
+CLOSING_VREL = -2.0
+
+
+def rate_limit_a_target(prev: float, value: float, release_rate: float = JERK_RELEASE) -> float:
+  if value > prev:
+    return min(value, prev + release_rate * DT_MDL)
+  return max(value, prev - JERK_BRAKE * DT_MDL)
+
+
+# stop-hold: once stopped, hold the stop and suppress creep until a sustained go, so the
+# stop/go transition is smooth and never gas-brakes at standstill.
+V_STOP_HOLD = 0.5     # m/s, latch the hold below this speed
+STOP_GO_FRAMES = 6    # consecutive not-should-stop frames required to release (~0.3 s)
+
+
+def apply_stop_hold(held: bool, go_count: int, v_ego: float, a_target: float, should_stop: bool):
+  if should_stop and v_ego < V_STOP_HOLD:
+    held = True
+  if held:
+    if should_stop:
+      go_count = 0
+    else:
+      go_count += 1
+      if go_count >= STOP_GO_FRAMES:
+        held = False
+    if held:
+      should_stop = True
+      a_target = min(a_target, 0.0)
+  return a_target, should_stop, held, go_count
 
 
 class LongitudinalPlannerSP:
@@ -46,6 +82,8 @@ class LongitudinalPlannerSP:
     self._last_plan_sm = None
     self._mpc_profile = None
     self._smoothed_radarstate = None
+    self._stop_held = False
+    self._stop_go_count = 0
 
   @property
   def output_a_target(self) -> float:
@@ -66,6 +104,18 @@ class LongitudinalPlannerSP:
     value = self.accel_controller.shape_decel(v_ego, value, radarstate, should_stop, force_decel)
     return max(value, self.accel_controller.get_min_accel(v_ego, radarstate, should_stop, force_decel))
 
+  def _release_rate(self) -> float:
+    rs = self._smoothed_radarstate
+    if rs is None:
+      return JERK_RELEASE
+
+    lead_one = rs.leadOne
+    lead_two = rs.leadTwo
+    if ((lead_one.status and lead_one.vRel < CLOSING_VREL) or
+        (lead_two.status and lead_two.vRel < CLOSING_VREL)):
+      return JERK_RELEASE_CLOSING
+    return JERK_RELEASE
+
   def _set_mpc_profile(self, v_ego: float) -> None:
     sm = self._last_plan_sm
     if sm is None:
@@ -82,11 +132,12 @@ class LongitudinalPlannerSP:
   @output_a_target.setter
   def output_a_target(self, value: float) -> None:
     value = float(value)
-    if not self.accel_controller.is_enabled():
-      self._output_a_target = value
-      return
-    value = self._apply_accel_personality_decel(value)
-    self._output_a_target = value
+    if math.isfinite(value):
+      if not self.accel_controller.is_enabled():
+        self._output_a_target = value
+        return
+      value = self._apply_accel_personality_decel(value)
+      self._output_a_target = rate_limit_a_target(self._output_a_target, value, self._release_rate())
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -103,6 +154,11 @@ class LongitudinalPlannerSP:
       return [ACCEL_MIN, self.accel_controller.get_max_accel(v_ego)]
     return None
 
+  def update_accel_clip(self, accel_clip: list[float], should_stop: bool, force_decel: bool) -> list[float]:
+    if self.accel_controller.is_enabled() and (should_stop or force_decel):
+      accel_clip[0] = ACCEL_MIN
+    return accel_clip
+
   def get_t_follow(self) -> float | None:
     if self.accel_controller.is_enabled():
       if self._mpc_profile is not None:
@@ -116,6 +172,13 @@ class LongitudinalPlannerSP:
         return self._mpc_profile.jerk_scale
       return self.accel_controller.get_jerk_scale()
     return 1.0
+
+  def stop_hold(self, v_ego: float, a_target: float, should_stop: bool) -> tuple[float, bool]:
+    if not self.accel_controller.is_enabled():
+      return a_target, should_stop
+    a_target, should_stop, self._stop_held, self._stop_go_count = apply_stop_hold(
+      self._stop_held, self._stop_go_count, v_ego, a_target, should_stop)
+    return a_target, should_stop
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
