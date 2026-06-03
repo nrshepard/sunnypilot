@@ -351,6 +351,22 @@
                   ]
                 },
                 {
+                  "key": "SpeedDependentTorqueToggle",
+                  "widget": "toggle",
+                  "title": "Speed-Dependent Self-Tune (Beta)",
+                  "description": "Learns separate torque parameters at different speeds. Improves steering at both low and high speeds for supported cars.",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    },
+                    {
+                      "type": "param",
+                      "key": "LiveTorqueParamsToggle",
+                      "equals": true
+                    }
+                  ]
+                },
+                {
                   "key": "CustomTorqueParams",
                   "widget": "toggle",
                   "title": "Enable Custom Tuning",
@@ -520,12 +536,6 @@
               ]
             },
             {
-              "key": "RoadEdgeLaneChangeEnabled",
-              "widget": "toggle",
-              "title": "Block Lane Change: Road Edge Detection",
-              "description": "Blocks lane change when the model sees a road edge on the side you signal."
-            },
-            {
               "key": "AutoLaneChangeBsmDelay",
               "widget": "toggle",
               "title": "Auto Lane Change: Delay with Blind Spot",
@@ -594,6 +604,26 @@
               ]
             },
             {
+              "key": "RadarDistance",
+              "widget": "toggle",
+              "title": "Radar Distance Anticipator",
+              "description": "Use the secondary radar lead to anticipate distant traffic and lift gas / apply gentle brake earlier than the MPC would on its own. Also smooths brief radar lead drop-outs so the MPC does not build panic brake on flicker. Aims for earlier, smoother decel with no late hard braking.",
+              "visibility": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "DisengageOnAccelerator",
               "widget": "toggle",
               "title": "Disengage Cruise on Accelerator Pedal",
@@ -622,6 +652,65 @@
                 {
                   "type": "capability",
                   "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "AccelPersonalityEnabled",
+              "widget": "toggle",
+              "title": "Acceleration Personality",
+              "description": "Enable per-personality acceleration profiles. Sport allows stronger acceleration; Eco is gentler.",
+              "visibility": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "AccelPersonality",
+              "widget": "multiple_button",
+              "title": "Acceleration Profile",
+              "description": "Sport allows the most aggressive acceleration; Eco the gentlest. Normal sits between.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Sport"
+                },
+                {
+                  "value": 1,
+                  "label": "Normal"
+                },
+                {
+                  "value": 2,
+                  "label": "Eco"
+                }
+              ],
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "AccelPersonalityEnabled",
+                  "equals": true
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "AccelPersonalityEnabled",
                   "equals": true
                 }
               ]
@@ -1347,6 +1436,19 @@
                     "field": "device_type",
                     "equals": "mici"
                   }
+                }
+              ]
+            },
+            {
+              "key": "LeadCarIndicator",
+              "widget": "toggle",
+              "title": "Lead Car Panel Indicator",
+              "description": "Shows a car icon on the right panel tracking the lead vehicle. Position moves up as lead gets closer. Color - green = far, orange = medium, red = close.",
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
                 }
               ]
             },
@@ -2205,6 +2307,54 @@
               "type": "param",
               "key": "ToyotaEnforceStockLongitudinal",
               "equals": false
+            }
+          ]
+        },
+        {
+          "key": "ToyotaTSS2Long",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Toyota: Custom Longitudinal for TSS2",
+          "description": "",
+          "enablement": [
+            {
+              "type": "not_engaged"
+            }
+          ]
+        },
+        {
+          "key": "ToyotaEnhancedBsm",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Toyota: Prius TSS2 BSM and some TSSP",
+          "description": "",
+          "enablement": [
+            {
+              "type": "not_engaged"
+            }
+          ]
+        },
+        {
+          "key": "ToyotaAutoHold",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Toyota: Auto Brake Hold (TSS2 Hybrid Cars)",
+          "description": "",
+          "enablement": [
+            {
+              "type": "not_engaged"
+            }
+          ]
+        },
+        {
+          "key": "ToyotaDriveMode",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Toyota: Drive Mode Button Link",
+          "description": "",
+          "enablement": [
+            {
+              "type": "not_engaged"
             }
           ]
         }
