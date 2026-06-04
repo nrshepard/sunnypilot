@@ -4,23 +4,25 @@ Copyright (c) 2021-, sunnypilot and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-navlog — unified, non-blocking logger for the mici-nav features.
+navlog — unified, non-blocking logger for the mici-nav features, with a MODE flag.
 
-- Callers do navlog.log(src, **fields) — cheap, never blocks (drops to a queue).
-- A background thread batches and STREAMS to the Helsinki collector over tailnet.
-- On send failure OR queue overflow it SPILLS to disk (/data/navd/navlog.jsonl),
-  so nothing is lost when offline — that's the "fallback to disk".
-- Heartbeat() gives per-process CPU%/loop-rate/RSS telemetry so we can see exactly
-  which nav feature is tanking the CPU when flipped on.
+Disk is always the source of truth; offload to the Helsinki collector is best-effort
+and never competes with driving.
 
-The logger thread is the ONLY thing that does network/disk I/O, so logging never
-adds latency to the caller's loop (important — we don't want the telemetry to be
-the thing that overloads the CPU).
+MODES (file /data/navd/flags/logmode, or env NAVLOG_MODE; default 'opportunistic'):
+  off            - logging disabled (zero overhead)
+  disk           - append to /data/navd/navlog.jsonl only, never network
+  stream         - append to disk AND offload ASAP (disk is the fallback)
+  opportunistic  - append to disk; offload only when load is low AND network up
+                   (i.e. parked/idle) so it never steals CPU/bandwidth while driving  [DEFAULT]
+
+log(src, **fields) is cheap and never blocks. Heartbeat() gives per-process
+cpu%/loop-rate/RSS so we can pin which feature tanks the CPU.
 """
 import os
 import json
 import time
-import queue
+import socket
 import threading
 import urllib.request
 
@@ -28,59 +30,102 @@ HOST = os.environ.get("NAVLOG_HOST", "100.122.84.123")   # Helsinki tailnet IP
 PORT = int(os.environ.get("NAVLOG_PORT", "5009"))
 URL = f"http://{HOST}:{PORT}/ingest"
 DISK = os.environ.get("NAVLOG_DISK", "/data/navd/navlog.jsonl")
-BATCH = 200
-QMAX = 20000
+OFFSET = DISK + ".offset"
+MODE_FILE = os.environ.get("NAVLOG_MODE_FILE", "/data/navd/flags/logmode")
+LOAD_MAX = float(os.environ.get("NAVLOG_LOAD_MAX", "5.0"))   # opportunistic offloads below this 1-min load
+VALID_MODES = ("off", "disk", "stream", "opportunistic")
+
+
+def _mode() -> str:
+  try:
+    m = open(MODE_FILE).read().strip().lower()
+    if m in VALID_MODES:
+      return m
+  except OSError:
+    pass
+  m = os.environ.get("NAVLOG_MODE", "opportunistic").lower()
+  return m if m in VALID_MODES else "opportunistic"
+
+
+def _net_ok() -> bool:
+  try:
+    s = socket.create_connection((HOST, PORT), timeout=1.5)
+    s.close()
+    return True
+  except OSError:
+    return False
 
 
 class _NavLog:
   def __init__(self):
-    self.q: queue.Queue = queue.Queue(maxsize=QMAX)
-    self.dropped = 0
-    self._t = threading.Thread(target=self._worker, name="navlog", daemon=True)
-    self._t.start()
+    self._buf = []
+    self._lock = threading.Lock()
+    threading.Thread(target=self._disk_writer, name="navlog_disk", daemon=True).start()
+    threading.Thread(target=self._offloader, name="navlog_offload", daemon=True).start()
 
-  def log(self, src: str, **fields):
+  def log(self, src, **fields):
+    if _mode() == "off":
+      return
     rec = {"t": round(time.time(), 3), "src": src}
     rec.update(fields)
-    try:
-      self.q.put_nowait(rec)
-    except queue.Full:
-      # queue backed up (e.g. stream can't keep up) -> spill straight to disk
-      self.dropped += 1
-      self._to_disk([rec])
+    with self._lock:
+      self._buf.append(rec)
 
-  def _worker(self):
+  def _disk_writer(self):
     while True:
-      batch = []
-      try:
-        batch.append(self.q.get(timeout=1.0))
-        while len(batch) < BATCH:
-          batch.append(self.q.get_nowait())
-      except queue.Empty:
-        pass
-      except Exception:
-        pass
-      if not batch:
+      time.sleep(1.0)
+      with self._lock:
+        batch, self._buf = self._buf, []
+      if not batch or _mode() == "off":
         continue
-      if not self._send(batch):
-        self._to_disk(batch)
+      try:
+        os.makedirs(os.path.dirname(DISK), exist_ok=True)
+        with open(DISK, "a") as f:
+          for r in batch:
+            f.write(json.dumps(r) + "\n")
+      except OSError:
+        pass
 
-  def _send(self, batch) -> bool:
-    try:
-      data = ("\n".join(json.dumps(r) for r in batch)).encode()
-      req = urllib.request.Request(URL, data=data, headers={"Content-Type": "application/x-ndjson"})
-      urllib.request.urlopen(req, timeout=2).read()
-      return True
-    except Exception:
-      return False
+  def _offloader(self):
+    while True:
+      time.sleep(3.0)
+      mode = _mode()
+      if mode in ("off", "disk"):
+        continue
+      if mode == "opportunistic":
+        try:
+          if os.getloadavg()[0] > LOAD_MAX:
+            continue   # busy (likely driving) — wait until idle
+        except OSError:
+          pass
+      if not _net_ok():
+        continue
+      self._drain()
 
-  def _to_disk(self, batch):
+  def _drain(self):
     try:
-      os.makedirs(os.path.dirname(DISK), exist_ok=True)
-      with open(DISK, "a") as f:
-        for r in batch:
-          f.write(json.dumps(r) + "\n")
+      off = int(open(OFFSET).read().strip()) if os.path.exists(OFFSET) else 0
+    except (OSError, ValueError):
+      off = 0
+    try:
+      size = os.path.getsize(DISK)
+    except OSError:
+      return
+    if off >= size:
+      return
+    with open(DISK, "rb") as f:
+      f.seek(off)
+      chunk = f.read(512 * 1024)            # bounded per pass
+      new_off = f.tell()
+    try:
+      urllib.request.urlopen(
+        urllib.request.Request(URL, data=chunk, headers={"Content-Type": "application/x-ndjson"}),
+        timeout=4).read()
     except Exception:
+      return                                # leave offset; retry next pass
+    try:
+      open(OFFSET, "w").write(str(new_off))
+    except OSError:
       pass
 
 
@@ -99,22 +144,17 @@ def log(src: str, **fields):
 
 
 class Heartbeat:
-  """Per-process CPU%/loop-rate/RSS telemetry. Call tick() each loop iteration;
-  it emits a heartbeat via navlog every `period` seconds. Cheap (a few /proc reads)."""
   _HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 
   def __init__(self, src: str, period: float = 5.0):
-    self.src = src
-    self.period = period
-    self.n = 0
-    self.t0 = time.time()
-    self.last_ticks = self._ticks()
+    self.src = src; self.period = period; self.n = 0
+    self.t0 = time.time(); self.last_ticks = self._ticks()
 
   def _ticks(self) -> int:
     try:
       with open("/proc/self/stat") as f:
         p = f.read().split()
-      return int(p[13]) + int(p[14])  # utime + stime
+      return int(p[13]) + int(p[14])
     except Exception:
       return 0
 
@@ -127,12 +167,9 @@ class Heartbeat:
 
   def tick(self):
     self.n += 1
-    now = time.time()
-    dt = now - self.t0
+    now = time.time(); dt = now - self.t0
     if dt >= self.period:
       ticks = self._ticks()
       cpu = 100.0 * (ticks - self.last_ticks) / self._HZ / dt if dt > 0 else 0.0
       log(self.src, ev="hb", loops=self.n, hz=round(self.n / dt, 1), cpu=round(cpu, 1), rss_mb=self._rss_mb())
-      self.n = 0
-      self.t0 = now
-      self.last_ticks = ticks
+      self.n = 0; self.t0 = now; self.last_ticks = ticks
