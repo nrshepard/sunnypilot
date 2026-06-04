@@ -145,20 +145,25 @@ class Navigationd:
     cloudlog.warning('navigationd init')
 
     while True:
-      self.sm.update(0)
-      location = self.sm['liveLocationKalman']
-      localizer_valid = location.positionGeodetic.valid if location else False
+      try:
+        self.sm.update(0)
+        location = self.sm['liveLocationKalman']
+        localizer_valid = location.positionGeodetic.valid if location else False
 
-      if localizer_valid:
-        self.last_bearing = degrees(location.calibratedOrientationNED.value[2])
-        self.last_position = Coordinate(location.positionGeodetic.value[0], location.positionGeodetic.value[1])
+        if localizer_valid:
+          self.last_bearing = degrees(location.calibratedOrientationNED.value[2])
+          self.last_position = Coordinate(location.positionGeodetic.value[0], location.positionGeodetic.value[1])
 
-      self._update_params()
-      banner_instructions, progress, nav_data = self._update_navigation()
+        self._update_params()
+        banner_instructions, progress, nav_data = self._update_navigation()
 
-      msg = self._build_navigation_message(banner_instructions, progress, nav_data, valid=localizer_valid)
+        msg = self._build_navigation_message(banner_instructions, progress, nav_data, valid=localizer_valid)
 
-      self.pm.send('navigationd', msg)
+        self.pm.send('navigationd', msg)
+      except Exception:
+        # one bad cycle (odd Mapbox response, transient parse error) must not kill nav
+        cloudlog.exception('navigationd iteration failed')
+
       self.rk.keep_time()
 
 

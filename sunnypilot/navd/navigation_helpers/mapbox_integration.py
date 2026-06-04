@@ -97,12 +97,12 @@ class MapboxIntegration:
         'duration': step['duration'],
         'location': {'longitude': step['maneuver']['location'][0], 'latitude': step['maneuver']['location'][1]},
         'modifier': step['maneuver'].get('modifier', 'none'),
-        'bannerInstructions': step['bannerInstructions'],
+        'bannerInstructions': step.get('bannerInstructions', []),
       }
       for step in leg['steps']
     ]
 
-    maxspeed = [{'speed': item['speed'], 'unit': item['unit']} for item in leg['annotation']['maxspeed'] if 'speed' in item]
+    maxspeed = [{'speed': item['speed'], 'unit': item['unit']} for item in leg.get('annotation', {}).get('maxspeed', []) if 'speed' in item]
 
     return {
       'steps': steps,

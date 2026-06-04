@@ -238,6 +238,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // mapd
     {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
+    // sunnypilot navd (mici-nav port) — register before MapdVersion
+    {"AllowNavigation", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"NavDesiresAllowed", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"MapboxToken", {PERSISTENT | BACKUP, STRING}},
+    {"MapboxRoute", {CLEAR_ON_MANAGER_START, STRING}},
+    {"MapboxSettings", {CLEAR_ON_MANAGER_START, STRING}},
+    {"MapboxRecompute", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},

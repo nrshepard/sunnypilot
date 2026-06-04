@@ -73,9 +73,11 @@ class Coordinate:
 
 
 def bearing_between_two_points(point_one: Coordinate, point_two: Coordinate) -> float:
+  lat1 = math.radians(point_one.latitude)
+  lat2 = math.radians(point_two.latitude)
   dlon = math.radians(point_two.longitude - point_one.longitude)
-  bearing_radians = math.atan2(math.sin(dlon)* math.cos(point_two.latitude), math.cos(point_one.latitude) * math.sin(point_two.latitude) -
-                               math.sin(point_one.latitude) * math.cos(point_two.latitude) * math.cos(dlon))
+  bearing_radians = math.atan2(math.sin(dlon) * math.cos(lat2),
+                               math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
   bearing_degrees = math.degrees(bearing_radians)
   bearing_normalized = (bearing_degrees + 360) % 360
   return bearing_normalized
