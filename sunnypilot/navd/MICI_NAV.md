@@ -99,3 +99,35 @@ logging session. `wifi_eager` self-gates on connectivity (does nothing while onl
 - Audible chime ~200m before a maneuver.
 - Read the **factory nav** turn-by-turn guidance off the CAN bus (Hyundai broadcasts maneuver
   arrows/distance to the cluster) — bypasses Mapbox entirely. Needs CAN reverse-engineering on the Palisade.
+
+## FUTURE TODO — ESCC (keep factory AEB + openpilot longitudinal) — NOT week 1
+Goal: run openpilot longitudinal AND retain factory AEB simultaneously. Currently impossible on the
+Palisade because op-long calls disable_ecu(0x7d0) once at init() — kills the MANDO radar (which IS the
+AEB) for the entire power cycle. No dash switch, no live swap; changing long mode = setting + reboot.
+
+The one supported "both" path = ENHANCED_SCC (ESCC):
+- Code is already present and NOT Palisade-gated. Auto-enables when CAN msg 0x2AB (ESCC_MSG) appears in
+  the bus-0 fingerprint (interface.py:176 -> sets HyundaiFlagsSP.ENHANCED_SCC, safetyParam ESCC).
+- When enabled: init() SKIPS disable_ecu (interface.py:235 guard) -> radar stays ALIVE -> factory AEB
+  preserved. openpilot does long by forwarding the radars
+
+## FUTURE TODO — ESCC (keep factory AEB + openpilot longitudinal) — NOT week 1
+Goal: run openpilot longitudinal AND retain factory AEB simultaneously. Currently impossible on the
+Palisade because op-long calls disable_ecu(0x7d0) once at init() — kills the MANDO radar (which IS the
+AEB) for the entire power cycle. No dash switch, no live swap; changing long mode = setting + reboot.
+
+The one supported "both" path = ENHANCED_SCC (ESCC):
+- Code is already present and NOT Palisade-gated. Auto-enables when CAN msg 0x2AB (ESCC_MSG) appears in
+  the bus-0 fingerprint (interface.py:176 -> sets HyundaiFlagsSP.ENHANCED_SCC, safetyParam ESCC).
+- When enabled: init() SKIPS disable_ecu (interface.py:235 guard) -> radar stays ALIVE -> factory AEB
+  preserved. openpilot does long by forwarding the radar real AEB/FCA decel into SCC12
+  (escc.py update_scc12: AEB_Status=2 = enabled, decel cmds + AEB_CmdAct sourced from the radar).
+- CATCH (why it is scary / not week 1): stock MANDO radar does NOT broadcast 0x2AB. That message only
+  exists after REFLASHING the radar with community ESCC firmware (makes radar emit 0x2AB AEB cmds while
+  staying quiet on the SCC msgs that would conflict with op). i.e. flashing a SAFETY ECU. Reversible but
+  real risk.
+- OPEN QUESTIONS to research before attempting: (1) does a known-good ESCC firmware image exist for the
+  Palisade radar part number? (2) flashing procedure + tooling + brick risk + reversibility. (3) panda
+  safety param ESCC support confirmed for this platform.
+- Files: opendbc/sunnypilot/car/hyundai/escc.py, opendbc/car/hyundai/interface.py:175-180,235,
+  hyundaican.py:167-169,214-215,251-252, carcontroller.py:111,193.
