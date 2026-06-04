@@ -101,3 +101,37 @@ class TestGenerateRoute:
 
   def test_empty_token(self):
     assert MapboxIntegration.generate_route(0, 0, 0, 0, token="") is None
+
+
+from openpilot.sunnypilot.navd.navstore import NavParams
+
+
+class TestNavStore:
+  def test_string_roundtrip_and_ipc(self, tmp_path):
+    a, b = NavParams(str(tmp_path)), NavParams(str(tmp_path))
+    a.put("MapboxRoute", "4500 Oak St")
+    assert a.get("MapboxRoute") == "4500 Oak St"
+    assert b.get("MapboxRoute") == "4500 Oak St"          # separate instance, shared file = IPC
+    assert a.get("DoesNotExist") is None
+
+  def test_defaults(self, tmp_path):
+    p = NavParams(str(tmp_path))
+    assert p.get("AllowNavigation", return_default=True) == "0"
+    assert p.get("MapboxToken", return_default=True) == ""
+    assert p.get("AllowNavigation") is None               # no default unless requested
+
+  def test_bool_and_upstream_truthy_semantics(self, tmp_path):
+    p = NavParams(str(tmp_path))
+    p.put_bool("AllowNavigation", True)
+    assert p.get("AllowNavigation") == "1" and p.get_bool("AllowNavigation") is True
+    p.put_bool("AllowNavigation", False)
+    assert p.get("AllowNavigation") == "0" and p.get_bool("AllowNavigation") is False
+
+  def test_mapbox_settings_dict_roundtrip(self, tmp_path):
+    p = NavParams(str(tmp_path))
+    settings = {"navData": {"route": {"totalDistance": 5.0, "steps": [], "geometry": [], "maxspeed": []}}}
+    p.put("MapboxSettings", settings)
+    got = p.get("MapboxSettings")
+    assert isinstance(got, dict) and got["navData"]["route"]["totalDistance"] == 5.0
+    p.remove("MapboxSettings")
+    assert p.get("MapboxSettings") is None

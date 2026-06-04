@@ -12,10 +12,20 @@ screen is tiny and a map widget is a separate from-scratch raylib build.
 - `cereal/services.py` — `navigationd` @ 3 Hz.
 - `system/manager/process_config.py` — launches `navigationd` (onroad) + `navdestd` (always).
 
+## Build-free deploy (Path A — current)
+Release slots are PREBUILT (no top-level SConstruct; params_pyx.so has a fixed key
+registry that rejects new keys). So navd stores its state as plain files via
+`navstore.NavParams` under `/data/navd/` instead of openpilot Params — **no compile
+needed**. pycapnp loads the `navigationd` message + `services.py` at runtime.
+Deploy = drop the branch into a slot + restart the manager. Set the token with:
+  printf '%s' "$MAPBOX_PUBLIC_TOKEN" > /data/navd/MapboxToken
+(The params_keys.h additions remain in-branch but are only relevant to a future
+source build / Path B; they are inert for the file-store deploy.)
+
 ## Params it uses
-- `MapboxToken` — public `pk.` token (geocode + directions). **Required.**
-- `MapboxRoute` — destination place-name string (what the Siri endpoint writes).
-- `AllowNavigation` — on/off (endpoint sets it with the destination).
+- `MapboxToken` — public `pk.` token. File: `/data/navd/MapboxToken`. **Required.**
+- `MapboxRoute` — destination place-name string. File: `/data/navd/MapboxRoute`.
+- `AllowNavigation` — on/off. File: `/data/navd/AllowNavigation`.
 
 ## Build on the car (into a SEPARATE slot — daily driver stays pristine)
 ```sh

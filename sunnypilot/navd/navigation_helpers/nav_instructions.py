@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from numpy import interp
 
-from openpilot.common.params import Params
+from openpilot.sunnypilot.navd.navstore import NavParams as Params
 
 from openpilot.sunnypilot.navd.helpers import Coordinate, bearing_between_two_points, distance_along_geometry, string_to_direction
 

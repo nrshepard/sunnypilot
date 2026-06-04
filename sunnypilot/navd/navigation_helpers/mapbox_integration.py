@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 import requests
 from urllib.parse import quote
 
-from openpilot.common.params import Params
+from openpilot.sunnypilot.navd.navstore import NavParams as Params
 
 
 class MapboxIntegration:

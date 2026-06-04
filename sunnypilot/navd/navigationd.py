@@ -9,7 +9,7 @@ from numpy import interp
 
 import cereal.messaging as messaging
 from cereal import custom
-from openpilot.common.params import Params
+from openpilot.sunnypilot.navd.navstore import NavParams as Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 

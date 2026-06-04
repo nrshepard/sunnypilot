@@ -25,7 +25,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from openpilot.common.params import Params
+from openpilot.sunnypilot.navd.navstore import NavParams as Params
 from openpilot.common.swaglog import cloudlog
 
 PORT = 5005
