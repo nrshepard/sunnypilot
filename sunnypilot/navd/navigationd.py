@@ -4,6 +4,8 @@ Copyright (c) 2021-, James Vecellio, Haibin Wen, sunnypilot, and a number of oth
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import threading
+import time
 from math import degrees
 from numpy import interp
 
@@ -18,6 +20,8 @@ from openpilot.sunnypilot.navd.helpers import Coordinate, parse_banner_instructi
 from openpilot.sunnypilot.navd.navigation_helpers.mapbox_integration import MapboxIntegration
 from openpilot.sunnypilot.navd.navigation_helpers.nav_instructions import NavigationInstructions
 
+RECOMPUTE_COOLDOWN_FRAMES = 30  # ~10s at 3Hz between (re)compute attempts — avoids hammering Mapbox
+
 
 class Navigationd:
   def __init__(self):
@@ -27,7 +31,7 @@ class Navigationd:
 
     self.sm = messaging.SubMaster(['carControlSP', 'liveLocationKalman'])
     self.pm = messaging.PubMaster(['navigationd'])
-    self.rk = Ratekeeper(3) # 3 Hz
+    self.rk = Ratekeeper(3)  # 3 Hz
 
     self.route = None
     self.destination: str | None = None
@@ -35,7 +39,6 @@ class Navigationd:
 
     self.allow_navigation: bool = False
     self.recompute_allowed: bool = False
-    self.allow_recompute: bool = False
     self.reroute_counter: int = 0
     self.cancel_route_counter: int = 0
 
@@ -44,35 +47,88 @@ class Navigationd:
     self.last_bearing: float | None = None
     self.valid: bool = False
 
+    # --- background recompute worker ---------------------------------------------------
+    # Mapbox geocode + directions are blocking HTTP. Running them on the 3Hz publish loop
+    # stalls navigationd (it stops publishing -> blank HUD). The worker thread owns all
+    # network calls; the main loop only ever does non-blocking disk reads + publishes.
+    self._lock = threading.Lock()
+    self._req: tuple | None = None        # (dest, lon, lat, bearing) pending for the worker
+    self._inflight: bool = False
+    self._route_reload: bool = False      # worker -> main: fresh route on disk, reload it
+    self._computed_dest: str | None = None
+    self._next_attempt_frame: int = 0
+    self._worker = threading.Thread(target=self._recompute_worker, name='navd_recompute', daemon=True)
+    self._worker.start()
+
+  def _recompute_worker(self):
+    while True:
+      req = None
+      with self._lock:
+        if self._req is not None and not self._inflight:
+          req, self._req, self._inflight = self._req, None, True
+      if req is None:
+        time.sleep(0.2)
+        continue
+      dest, lon, lat, bearing = req
+      valid = False
+      try:
+        # blocking HTTP (geocode + directions); writes MapboxSettings on success
+        _, valid = self.mapbox.set_destination({'place_name': dest}, lon, lat, bearing)
+      except Exception:
+        cloudlog.exception('navigationd: recompute worker failed')
+      with self._lock:
+        if valid:
+          self._computed_dest = dest
+          self._route_reload = True
+        self._inflight = False
+
+  def _queue_recompute(self, dest: str) -> bool:
+    with self._lock:
+      if self._inflight or self._req is not None:
+        return False
+      self._req = (dest, self.last_position.longitude, self.last_position.latitude, self.last_bearing)
+      return True
+
   def _update_params(self):
-    if self.last_position is not None:
-      self.frame += 1
-      if self.frame % 15 == 0:
-        self.allow_navigation = self.params.get('AllowNavigation', return_default=True)
-        self.new_destination = self.params.get('MapboxRoute')
-        self.recompute_allowed = self.params.get('MapboxRecompute', return_default=True)
+    if self.last_position is None:
+      return
+    self.frame += 1
+    if self.frame % 15 == 0:
+      self.allow_navigation = self.params.get('AllowNavigation', return_default=True)
+      self.new_destination = self.params.get('MapboxRoute')
+      self.recompute_allowed = self.params.get('MapboxRecompute', return_default=True)
 
-      self.allow_recompute: bool = (self.new_destination != self.destination and self.new_destination != '') or (
-        self.recompute_allowed and self.reroute_counter > 9 and self.route)
+    new_dest = self.new_destination or ''
 
-      if self.allow_recompute:
-        postvars = {'place_name': self.new_destination}
-        postvars, valid_addr = self.mapbox.set_destination(postvars, self.last_position.longitude, self.last_position.latitude, self.last_bearing)
+    # apply a route the worker just computed (disk read only — non-blocking)
+    with self._lock:
+      reload_now, computed = self._route_reload, self._computed_dest
+      self._route_reload = False
+    if reload_now:
+      self.destination = computed
+      self.nav_instructions.clear_route_cache()
+      self.route = self.nav_instructions.get_current_route()
+      self.cancel_route_counter = 0
+      self.reroute_counter = 0
 
-        if valid_addr:
-          self.destination = self.new_destination
-          self.nav_instructions.clear_route_cache()
-          self.route = self.nav_instructions.get_current_route()
-          self.cancel_route_counter = 0
-          self.reroute_counter = 0
+    # decide whether a (re)compute is needed and hand it to the worker — never block here
+    need_new = new_dest != '' and new_dest != self.destination
+    need_reroute = bool(self.recompute_allowed and self.reroute_counter > 9 and self.route)
+    if (need_new or need_reroute) and self.frame >= self._next_attempt_frame:
+      dest = new_dest if need_new else self.destination
+      if dest and self._queue_recompute(dest):
+        self._next_attempt_frame = self.frame + RECOMPUTE_COOLDOWN_FRAMES
+        self.reroute_counter = 0
 
-      if self.cancel_route_counter == 30:
-        self.cancel_route_counter = 0
-        self.params.put_nonblocking("MapboxRoute", "")
-        self.nav_instructions.clear_route_cache()
-        self.route = None
+    # route cancellation (disk only)
+    if self.cancel_route_counter == 30:
+      self.cancel_route_counter = 0
+      self.params.put_nonblocking("MapboxRoute", "")
+      self.nav_instructions.clear_route_cache()
+      self.route = None
+      self.destination = None
 
-      self.valid = self.route is not None
+    self.valid = self.route is not None
 
   def _update_navigation(self) -> tuple[str, dict | None, dict]:
     banner_instructions: str = ''
@@ -161,7 +217,7 @@ class Navigationd:
 
         self.pm.send('navigationd', msg)
       except Exception:
-        # one bad cycle (odd Mapbox response, transient parse error) must not kill nav
+        # one bad cycle must never kill nav (or stall the publish loop)
         cloudlog.exception('navigationd iteration failed')
 
       self.rk.keep_time()
@@ -170,3 +226,7 @@ class Navigationd:
 def main():
   nav = Navigationd()
   nav.run()
+
+
+if __name__ == "__main__":
+  main()
