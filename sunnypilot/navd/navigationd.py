@@ -227,6 +227,9 @@ class Navigationd:
 
 
 def main():
+  # navigationd is the always-on nav daemon — own it as the device-wide system
+  # stats emitter (cpu/mem/disk/temp on its own thread, independent of the nav loop).
+  navlog.start_system_monitor()
   nav = Navigationd()
   nav.run()
 

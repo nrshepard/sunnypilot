@@ -20,10 +20,13 @@ log(src, **fields) is cheap and never blocks. Heartbeat() gives per-process
 cpu%/loop-rate/RSS so we can pin which feature tanks the CPU.
 """
 import os
+import sys
+import glob
 import json
 import time
 import socket
 import threading
+import subprocess
 import urllib.request
 
 HOST = os.environ.get("NAVLOG_HOST", "100.122.84.123")   # Helsinki tailnet IP
@@ -34,6 +37,90 @@ OFFSET = DISK + ".offset"
 MODE_FILE = os.environ.get("NAVLOG_MODE_FILE", "/data/navd/flags/logmode")
 LOAD_MAX = float(os.environ.get("NAVLOG_LOAD_MAX", "5.0"))   # opportunistic offloads below this 1-min load
 VALID_MODES = ("off", "disk", "stream", "opportunistic")
+
+# which process is emitting (so the collector can tell navigationd from the UI etc.)
+PROC = os.environ.get("NAVLOG_PROC") or (os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else "nav")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_GIT_CACHE = None
+_SYSMON_ON = False
+_SYSMON_PERIOD = float(os.environ.get("NAVLOG_SYS_PERIOD", "5.0"))
+SESSION_PERIOD = float(os.environ.get("NAVLOG_SESSION_PERIOD", "30.0"))
+
+
+def _git_info() -> dict:
+  """repo / branch / commit / dirty for the running tree, captured once (best-effort).
+
+  This is the 'what code produced this data' stamp — so a stale checkout (device N
+  commits behind) is obvious in the stream instead of silently emitting nothing/old data.
+  """
+  global _GIT_CACHE
+  if _GIT_CACHE is not None:
+    return _GIT_CACHE
+
+  def _g(args, default=""):
+    try:
+      return subprocess.run(["git", "-C", _REPO_ROOT, *args], capture_output=True,
+                            text=True, timeout=3).stdout.strip()
+    except Exception:
+      return default
+
+  upstream = _g(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+  remote = upstream.split("/")[0] if "/" in upstream else "origin"
+  _GIT_CACHE = {
+    "repo": _g(["remote", "get-url", remote]) or "?",
+    "branch": _g(["rev-parse", "--abbrev-ref", "HEAD"]) or "?",
+    "commit": _g(["rev-parse", "--short=10", "HEAD"]) or "?",
+    "upstream": upstream or "?",
+    "dirty": bool(_g(["status", "--porcelain"])),
+  }
+  return _GIT_CACHE
+
+
+def _sys_sample() -> dict:
+  """Device-wide stats: load, memory, /data disk, SoC temperature. Per-pass cpu% is
+  added by _SysMon (needs a /proc/stat delta). All fields best-effort / guarded."""
+  d = {}
+  try:
+    la = os.getloadavg()
+    d["load1"] = round(la[0], 2)
+    d["load5"] = round(la[1], 2)
+  except OSError:
+    pass
+  try:
+    mi = {}
+    with open("/proc/meminfo") as f:
+      for line in f:
+        k, _, v = line.partition(":")
+        mi[k] = int(v.split()[0])  # kB
+    total, avail = mi.get("MemTotal", 0), mi.get("MemAvailable", 0)
+    if total:
+      d["mem_total_mb"] = total // 1024
+      d["mem_used_mb"] = (total - avail) // 1024
+      d["mem_pct"] = round(100.0 * (total - avail) / total, 1)
+  except Exception:
+    pass
+  try:
+    st = os.statvfs("/data")
+    tot = st.f_blocks * st.f_frsize
+    used = (st.f_blocks - st.f_bfree) * st.f_frsize
+    if tot:
+      d["disk_used_gb"] = round(used / 1e9, 1)
+      d["disk_pct"] = round(100.0 * used / tot, 1)
+  except Exception:
+    pass
+  try:
+    temps = []
+    for zone in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
+      try:
+        t = int(open(zone).read().strip())
+        temps.append(t / 1000.0 if t > 1000 else float(t))
+      except Exception:
+        pass
+    if temps:
+      d["temp_max_c"] = round(max(temps), 1)
+  except Exception:
+    pass
+  return d
 
 
 def _mode() -> str:
@@ -62,6 +149,15 @@ class _NavLog:
     self._lock = threading.Lock()
     threading.Thread(target=self._disk_writer, name="navlog_disk", daemon=True).start()
     threading.Thread(target=self._offloader, name="navlog_offload", daemon=True).start()
+    threading.Thread(target=self._session_stamper, name="navlog_session", daemon=True).start()
+
+  def _session_stamper(self):
+    # Emit the git/code-version stamp immediately and re-emit periodically, so a
+    # collector that joins late still learns which commit produced the stream.
+    while True:
+      if _mode() != "off":
+        self.log("session", ev="hello", proc=PROC, **_git_info())
+      time.sleep(SESSION_PERIOD)
 
   def log(self, src, **fields):
     if _mode() == "off":
@@ -141,6 +237,49 @@ def get() -> _NavLog:
 
 def log(src: str, **fields):
   get().log(src, **fields)
+
+
+class _SysMon(threading.Thread):
+  """Device-wide system heartbeat — runs on its own thread so it keeps streaming
+  even if a nav loop stalls. Emits src='system': cpu%, load, mem, disk, temp."""
+  def __init__(self, period: float):
+    super().__init__(name="navlog_sysmon", daemon=True)
+    self.period = period
+    self._last = self._cpu_ticks()
+
+  @staticmethod
+  def _cpu_ticks():
+    try:
+      with open("/proc/stat") as f:
+        vals = list(map(int, f.readline().split()[1:]))
+      idle = vals[3] + (vals[4] if len(vals) > 4 else 0)  # idle + iowait
+      return sum(vals), idle
+    except Exception:
+      return None
+
+  def run(self):
+    while True:
+      time.sleep(self.period)
+      if _mode() == "off":
+        continue
+      d = _sys_sample()
+      cur = self._cpu_ticks()
+      if cur and self._last and cur[0] > self._last[0]:
+        dt, di = cur[0] - self._last[0], cur[1] - self._last[1]
+        d["cpu_pct"] = round(100.0 * (dt - di) / dt, 1)
+      self._last = cur or self._last
+      log("system", ev="hb", proc=PROC, **d)
+
+
+def start_system_monitor(period: float = None):
+  """Begin device-wide system-stats heartbeats. Idempotent; call once from a
+  long-lived nav process (e.g. navigationd)."""
+  global _SYSMON_ON
+  if _SYSMON_ON:
+    return
+  _SYSMON_ON = True
+  get()  # ensure writer/offloader threads exist
+  _SysMon(period or _SYSMON_PERIOD).start()
 
 
 class Heartbeat:

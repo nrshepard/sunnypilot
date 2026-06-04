@@ -131,3 +131,46 @@ The one supported "both" path = ENHANCED_SCC (ESCC):
   safety param ESCC support confirmed for this platform.
 - Files: opendbc/sunnypilot/car/hyundai/escc.py, opendbc/car/hyundai/interface.py:175-180,235,
   hyundaican.py:167-169,214-215,251-252, carcontroller.py:111,193.
+
+
+## SESSION UPDATE #3 (2026-06-04) — live telemetry + UI CPU verdict + version stamping
+
+### THE BUG THAT WASTED THE FIRST BOOT: device was 6 commits stale
+- Device /data/openpilot was on mici-nav @ 260a49ea69 — BEFORE navlog.py even existed.
+  Flipping logmode/nav flags did nothing because the code that emits had not been pulled.
+- Fix: git merge --ff-only navfork/mici-nav -> 89caf59 (clean tree, prebuilt device, all-Python
+  delta so no compile). Then reboot. Stream immediately flowed.
+- ROOT-CAUSE PREVENTION (shipped this session): navlog now emits a `session` hello record
+  (repo/branch/commit/upstream/dirty) at startup + every 30s. A stale checkout is now obvious
+  in the stream instead of silently emitting nothing. See navlog._git_info / _session_stamper.
+
+### CPU VERDICT (from live capture, device parked, ~56 fps)
+  navigationd : cpu avg 2.0% max 6.5%  @ 1.0 Hz, rss 89 MB   -> trivial (1 Hz change confirmed)
+  nav_hud     : upd 16 us/frame, draw 0 us, active_pct 0     -> ~0.09% of a core; NOT the hog
+  nav_ui      : cpu avg 58.7% max 63%  @ ~56 fps, rss 222 MB -> the cost, but it is the BASE
+                mici UI render loop, not nav.
+  => The nav port is EXONERATED. navigationd is ~2%, the nav HUD widget is ~0.09%. The ~59%
+     is the stock mici UI rendering a full GPU frame every tick.
+
+### WHY the UI is ~59% and the real lever
+- system/ui/lib/application.py: _DEFAULT_FPS = 60 (non-tizi). render() does begin_drawing ->
+  clear -> render top widget(s) -> end_drawing EVERY frame at target_fps. Onroad the top widget
+  is augmented_road_view (camera texture + model overlay) — a full redraw at 60 fps, no
+  dirty-rect / render-on-change skip. That is the ~59%, and it is GPU-composite + model draw,
+  not navigation.
+- LEVERS (not applied — need on-device A/B, do not change blind):
+  (a) target_fps: env FPS=<n> or gui_app.init_window(fps=). 60->30 ~halves UI CPU but affects
+      camera smoothness globally. Could gate lower fps to the nav/offroad screens only.
+  (b) render-on-change for static widgets (big refactor of stock UI; risky).
+- EXACT NEXT-SESSION TOOL: the UI has a built-in render profiler. Launch UI with
+  PROFILE_RENDER=600 (10 s @ 60 fps); after N frames it dumps pstats top-100 by cumtime
+  (PROFILE_STATS, default 100) -> pinpoints the precise hot functions inside the 59%.
+  Refs: application.py:42 PROFILE_RENDER, :586 enable, :673/:826 dump.
+
+### NEW TELEMETRY shipped this session (navlog.py)
+- src=session : ev=hello, proc, repo, branch, commit, upstream, dirty   (startup + 30 s)
+- src=system  : ev=hb, proc, cpu_pct (WHOLE DEVICE via /proc/stat delta), load1/load5,
+                mem_total_mb/mem_used_mb/mem_pct, disk_used_gb/disk_pct (/data),
+                temp_max_c (thermal zones). Own thread (navlog_sysmon) so it streams even if
+                the nav loop stalls. Started once from navigationd.main via
+                navlog.start_system_monitor(). Gated by logmode; verified e2e to collector.
