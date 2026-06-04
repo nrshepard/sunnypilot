@@ -174,3 +174,72 @@ The one supported "both" path = ENHANCED_SCC (ESCC):
                 temp_max_c (thermal zones). Own thread (navlog_sysmon) so it streams even if
                 the nav loop stalls. Started once from navigationd.main via
                 navlog.start_system_monitor(). Gated by logmode; verified e2e to collector.
+
+
+## SESSION UPDATE #5 (2026-06-04) — UI 59% CPU: SMOKING GUN via in-car cProfile
+
+Device updated to b903f78b8a (session+system telemetry live, version stamp reads OK not STALE).
+System stats confirmed flowing: cpu_pct (whole device), load, mem, /data disk, temp_max_c ~75C.
+
+### THE QUESTION: is the UI's 59% CPU real compute or just waiting?
+Three methods, escalating confidence:
+
+1) PER-THREAD CPU (/proc/PID/task/*/stat, 1s delta):
+   main thread = +85 cs/s (85% of a core); every other thread <=8 cs/s.
+   => the ENTIRE cost is the single render thread. Nothing else matters.
+
+2) NON-INTRUSIVE /proc STATE+SYSCALL SAMPLING (100 samples @10ms, zero process stop):
+   state: 59% R (running on CPU) / 41% S (sleeping)  -> matches navlog's 59% exactly
+   syscall: 66% running in USERSPACE (no syscall) / 31% ioctl#29 (drmWaitVBlank) / 3% clock_nanosleep
+   => the 59% is GENUINE userspace render compute, NOT blocked-wait. The vblank/sleep
+      waits are the free 41% S. Verdict: real CPU, full redraw every frame.
+   (gdb stack sampling is WALL-biased here -- attach latency lands you in the EndDrawing
+    vblank wait; it under-counts the active draw. Use /proc state sampling instead, or cProfile.)
+
+3) cProfile via PROFILE_RENDER (definitive, self-time = real CPU). 400 frames:
+   ncalls  tottime  cumtime  function
+   400     1.069    1.764    raylib EndDrawing            <- #1: GPU submit + 60fps busy-wait/swap
+   1757    0.372    0.529    model_renderer:405 _map_line_to_polygon  <- lane/path->polygon tessellation (numpy)
+   1830    0.150    0.946    application:174 _handle_mouse_event       <- input poll EVERY frame (high while parked!)
+   7350    0.131    6.317    widgets/__init__:106 render               <- widget-tree dispatch (recursive)
+   252     0.060    0.433    cameraview:226 _render
+   253     0.037    2.814    augmented_road_view:191 _render           <- camera + model overlay chain
+   1829    0.035   10.204    realtime:72 keep_time                     <- FRAME PACER (sleep) = most WALL time, ~0 CPU
+   Run: 400 frames in 13081 ms, avg 32.7 ms (30.6 FPS, profiler-slowed).
+
+### VERDICT
+- keep_time cumtime 10.2s of 13s => most WALL time is the pacer sleeping (free). Real CPU is
+  concentrated in EndDrawing + the per-frame draw tree.
+- #1 CPU consumer = raylib EndDrawing (1.07s self): GPU draw submission + raylib's WaitTime
+  busy-wait tail + SwapScreenBuffer->drmWaitVBlank. "Full GPU frame every tick @60fps" confirmed.
+- Biggest pure-app cost = model_renderer._map_line_to_polygon (path/lane tessellation). NOTE: it
+  is already gated to model rate (_update_model ran 251x / 400 frames ~= 20Hz, NOT every frame),
+  so it is genuinely-costly numpy, NOT a redundant-recompute bug. ~7 calls per model packet
+  (4 lane lines + 2 road edges + path).
+- SURPRISE: _handle_mouse_event = 0.95s cumtime over the run (1830 calls, ~4.5/frame) polling
+  input every frame while PARKED with no touch. Worth throttling -- cheap win.
+- Nav port stays EXONERATED: navigationd ~2% @1Hz, nav_hud widget ~0.09% (0 draw_us). The cost
+  is 100% the base mici UI render, not navigation.
+
+### LEVERS (ranked)
+1. target_fps 60 -> 30 (env FPS=30, supported at application.py:27). Halves EndDrawing/sec AND
+   every per-frame draw. The profiled run AT 30fps already showed ~30% CPU vs 59% @60. Highest ROI.
+   Could gate low fps to offroad/nav screens only to keep camera smooth onroad.
+2. Throttle _handle_mouse_event when no touch session active (~7% cumtime back).
+3. _map_line_to_polygon: already model-rate-gated; only worth micro-opt if pushing further.
+
+### REUSABLE TECHNIQUE: profile the comma UI WITHOUT tearing down the stack
+The managed `ui` has restart_if_crash=True, and setproctitle CLOBBERS /proc/PID/environ (reads as
+spaces -- you CANNOT recover env from the running ui). To run a faithful standalone profile while
+camerad/modeld stay live (so the camera composite is realistic):
+  SLOT=/data/op_slots/sunnypilot-mici-nav ; PY=/usr/local/venv/bin/python   # capnp lives in this venv
+  MPIDS=$(pgrep -f manager.py); UIPID=$(pgrep -f selfdrive.ui.ui|head -1)
+  trap "kill -CONT $MPIDS" EXIT          # ALWAYS resume manager, even on failure
+  kill -STOP $MPIDS                      # pause supervision; children keep running
+  kill -9 $UIPID                         # SIGTERM is ignored; must SIGKILL, then wait for display release
+  cd $SLOT && . launch_env.sh && PYTHONPATH=$SLOT \
+    PROFILE_RENDER=400 PROFILE_STATS=45 $PY -c "import importlib; importlib.import_module('selfdrive.ui.ui').main()"
+  # profiler dumps pstats to stdout then sys.exit(0); manager respawns ui on CONT.
+Gotchas: use the venv python (system python3 lacks capnp); replicate launcher exactly
+(importlib.import_module('selfdrive.ui.ui').main()); PROFILE_RENDER=N frames, PROFILE_STATS=top-N.
+Refs: application.py:42/586/673/826 (profiler), process.py:20 (launcher).
