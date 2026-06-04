@@ -61,11 +61,38 @@ Cancel route: GET `http://<comma-ip>:5005/cancel`.  Status: `/status`.
 ## Also works
 - **Tell the assistant** "drive to <address>" → it writes `MapboxRoute` over SSH (no app needed).
 
-## On-screen signal (in this branch — MVP)
-`NavManeuver` widget in `selfdrive/ui/mici/onroad/hud_renderer.py` draws a direction
-**chevron + distance + next-street**, top-center, fading in when a maneuver is live.
-Vector/text only (no image assets). UI subscribes to `navigationd` via `ui_state.py`.
-Sizes/placement are first-pass — tune on-device.
+## On-screen signal (in this branch)
+`NavManeuver` widget in `selfdrive/ui/mici/onroad/hud_renderer.py`. Redesigned 2026-06-04
+(old top-center chevron trashed — it drew every UI frame and was a CPU suspect).
+
+Now: a thin **right-edge vertical bar** (~10px wide) that starts FULL and **drains UP** to
+zero as you approach the maneuver, with a small **vector action-icon above** it (no PNG assets).
+- Trigger: **time-to-maneuver** gate — `distance / vEgo <= 10s` (speed-aware lead). Bar turns
+  orange when <25% remaining.
+- Perf discipline: recompute maneuver state **only on a fresh `navigationd` message**
+  (`sm.updated`), **draw only when active** (`alpha > 0`), `FirstOrderFilter` fade. This fixes
+  the old per-frame draw cost.
+- Icon set (vectors, mirrored for side): left/right, slight L/R, sharp L/R, uturn, straight,
+  merge L/R, fork/keep L/R, exit/ramp L/R, roundabout, depart (dot), **arrive (finish flag)**.
+- Mapbox maneuvers covered (`type`+`modifier`): turn, slight, sharp, uturn, straight/continue,
+  merge, fork/keep, on/off-ramp, roundabout/rotary, depart, arrive (~10 glyphs, mirrored).
+
+## Telemetry logging (`navlog`) — modes & flags
+`sunnypilot/navd/navlog.py`. Per-process heartbeats (cpu/hz/rss) + events. Mode flag at
+`/data/navd/flags/logmode`:
+- `off` — no logging.
+- `disk` — local disk only (`comma_logs/`).
+- `stream` — disk + live stream to Helsinki collector.
+- `opportunistic` (**DEFAULT**) — always disk (source of truth); offloads to Helsinki only when
+  1-min load < 5 AND network up (parked/idle), incremental + offset-tracked. Never competes with
+  driving. Streaming validated end-to-end: `navlog -> collector -> comma_logs/stream.jsonl`.
+
+## Independent feature flags (all decoupled)
+`navigationd | navdestd | wifi_eager | can_capture | logmode` — each gated separately under
+`/data/navd/flags/`. Notable: **`can_capture` is fully decoupled from nav** — own flag, own
+`process_config` entry, and in selfdrived `ignored_processes` so it can never block engagement.
+It subscribes to the full CAN firehose (heavy), so it runs only when explicitly flagged for a
+logging session. `wifi_eager` self-gates on connectivity (does nothing while online) — left as-is.
 
 ## Future (not in this branch)
 - On-device favorites/recents tap-list (no-keyboard destination on the tiny screen).
