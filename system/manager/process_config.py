@@ -130,6 +130,7 @@ procs = [
   PythonProcess("locationd", "selfdrive.locationd.locationd", only_onroad),
   PythonProcess("navigationd", "sunnypilot.navd.navigationd", only_onroad),
   PythonProcess("navdestd", "sunnypilot.navd.nav_destination_server", always_run),
+  PythonProcess("wifi_eager", "sunnypilot.navd.wifi_eager", always_run),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "selfdrive.locationd.calibrationd", only_onroad),
   PythonProcess("torqued", "selfdrive.locationd.torqued", only_onroad),
