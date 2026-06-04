@@ -22,6 +22,7 @@ import subprocess
 import time
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.navd import navlog
 
 # NetworkManager connection name for the phone hotspot (see `nmcli connection show`).
 HOTSPOT_CONN = "openpilot connection Nathan's iPhone 17 Pro"
@@ -49,8 +50,10 @@ def hotspot_active() -> bool:
 
 def main():
   cloudlog.warning("wifi_eager: started")
+  hb = navlog.Heartbeat("wifi_eager")
   while True:
     try:
+      hb.tick()
       if not is_online():
         # nudge a fresh scan (throttled by NM; errors are harmless)
         _run(["nmcli", "dev", "wifi", "rescan"], timeout=20)
@@ -61,6 +64,7 @@ def main():
                    timeout=CONNECT_WAIT_S + 8)
           if r is not None and r.returncode == 0:
             cloudlog.warning("wifi_eager: hotspot connected")
+            navlog.log("wifi_eager", ev="hotspot_connected")
     except Exception:
       cloudlog.exception("wifi_eager: iteration error")
     time.sleep(PERIOD_S)

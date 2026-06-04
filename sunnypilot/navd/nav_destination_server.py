@@ -26,7 +26,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 from openpilot.sunnypilot.navd.navstore import NavParams as Params
+import threading
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.navd import navlog
 
 PORT = 5005
 _CLEAR_WORDS = ("", "cancel", "clear", "stop", "end", "off")
@@ -88,8 +90,16 @@ class Handler(BaseHTTPRequestHandler):
     pass
 
 
+def _heartbeat():
+  hb = navlog.Heartbeat("navdestd")
+  while True:
+    hb.tick()
+    import time as _t; _t.sleep(1.0)
+
+
 def main():
   cloudlog.warning(f"navdestd: listening on :{PORT}")
+  threading.Thread(target=_heartbeat, name="navdestd_hb", daemon=True).start()
   ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

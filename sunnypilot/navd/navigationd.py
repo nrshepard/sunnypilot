@@ -14,6 +14,7 @@ from cereal import custom
 from openpilot.sunnypilot.navd.navstore import NavParams as Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.navd import navlog
 
 from openpilot.sunnypilot.navd.constants import NAV_CV
 from openpilot.sunnypilot.navd.helpers import Coordinate, parse_banner_instructions
@@ -32,6 +33,7 @@ class Navigationd:
     self.sm = messaging.SubMaster(['carState', 'liveLocationKalman'])
     self.pm = messaging.PubMaster(['navigationd'])
     self.rk = Ratekeeper(3)  # 3 Hz
+    self.hb = navlog.Heartbeat("navigationd")
 
     self.route = None
     self.destination: str | None = None
@@ -202,6 +204,7 @@ class Navigationd:
 
     while True:
       try:
+        self.hb.tick()
         self.sm.update(0)
         location = self.sm['liveLocationKalman']
         localizer_valid = location.positionGeodetic.valid if location else False
