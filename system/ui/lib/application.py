@@ -28,7 +28,9 @@ _DEFAULT_FPS = int(os.getenv("FPS", {'tizi': 20}.get(HARDWARE.get_device_type(),
 FPS_LOG_INTERVAL = 5  # Seconds between logging FPS drops
 FPS_DROP_THRESHOLD = 0.9  # FPS drop threshold for triggering a warning
 FPS_CRITICAL_THRESHOLD = 0.5  # Critical threshold for triggering strict actions
-MOUSE_THREAD_RATE = 140  # touch controller runs at 140Hz
+MOUSE_THREAD_RATE = 140  # touch controller runs at 140Hz (active)
+MOUSE_IDLE_RATE = 30     # poll slower when no touch is active; ramps back to 140Hz on contact
+MOUSE_ACTIVE_HOLD = 1.0  # stay at full rate for this many seconds after the last touch
 MAX_TOUCH_SLOTS = 2
 TOUCH_HISTORY_TIMEOUT = 3.0  # Seconds before touch points fade out
 
@@ -144,6 +146,8 @@ class MouseState:
     self._prev_mouse_event: list[MouseEvent | None] = [None] * MAX_TOUCH_SLOTS
 
     self._rk = Ratekeeper(MOUSE_THREAD_RATE, print_delay_threshold=None)
+    self._rk_idle = Ratekeeper(MOUSE_IDLE_RATE, print_delay_threshold=None)
+    self._active_until = 0.0
     self._lock = threading.Lock()
     self._exit_event = threading.Event()
     self._thread = None
@@ -168,14 +172,23 @@ class MouseState:
   def _run_thread(self):
     while not self._exit_event.is_set():
       rl.poll_input_events()
-      self._handle_mouse_event()
-      self._rk.keep_time()
+      touched = self._handle_mouse_event()
+      now = time.monotonic()
+      if touched:
+        self._active_until = now + MOUSE_ACTIVE_HOLD
+      # Full 140Hz while a touch is active (and briefly after, so scroll velocity/decel
+      # stay smooth through lift-off); drop to idle rate when there is nothing to track.
+      if now < self._active_until:
+        self._rk.keep_time()
+      else:
+        self._rk_idle.keep_time()
 
   def _handle_mouse_event(self):
     # TODO: read touch events from evdev directly to get real kernel timestamps.
     #  Polling at 140Hz with time.monotonic() causes timing jitter that makes scroll
     #  velocity oscillate (alternating high/low). Real timestamps would also let us
     #  detect swipe-stop-lift via event gaps instead of the fragile decel heuristic.
+    touched = False
     for slot in range(MAX_TOUCH_SLOTS):
       mouse_pos = rl.get_touch_position(slot)
       x = mouse_pos.x / self._scale if self._scale != 1.0 else mouse_pos.x
@@ -188,12 +201,15 @@ class MouseState:
         rl.is_mouse_button_down(slot),
         time.monotonic(),
       )
+      if ev.left_pressed or ev.left_released or ev.left_down:
+        touched = True
       # Only add changes
       prev = self._prev_mouse_event[slot]
       if prev is None or ev[:-1] != prev[:-1]:
         with self._lock:
           self._events.append(ev)
         self._prev_mouse_event[slot] = ev
+    return touched
 
 
 class GuiApplication(GuiApplicationExt):
