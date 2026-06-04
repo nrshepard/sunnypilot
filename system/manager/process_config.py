@@ -9,6 +9,7 @@ from openpilot.system.manager.process import PythonProcess, NativeProcess, Daemo
 from openpilot.system.hardware.hw import Paths
 
 from openpilot.sunnypilot.mapd.mapd_manager import MAPD_PATH
+from openpilot.sunnypilot.navd.nav_flags import enabled as nav_flag
 
 from openpilot.sunnypilot.models.helpers import get_active_model_runner
 from openpilot.sunnypilot.sunnylink.utils import sunnylink_need_register, sunnylink_ready, use_sunnylink_uploader
@@ -106,6 +107,16 @@ def or_(*fns):
 def and_(*fns):
   return lambda *args: operator.and_(*(fn(*args) for fn in fns))
 
+def navd_enabled(started, params, CP) -> bool:
+  return nav_flag('navigationd')
+
+def navdestd_enabled(started, params, CP) -> bool:
+  return nav_flag('navdestd')
+
+def wifi_eager_enabled(started, params, CP) -> bool:
+  return nav_flag('wifi_eager')
+
+
 procs = [
   DaemonProcess("manage_athenad", "system.athena.manage_athenad", "AthenadPid"),
 
@@ -128,9 +139,9 @@ procs = [
   PythonProcess("ui", "selfdrive.ui.ui", always_run, restart_if_crash=True),
   PythonProcess("soundd", "selfdrive.ui.soundd", driverview),
   PythonProcess("locationd", "selfdrive.locationd.locationd", only_onroad),
-  PythonProcess("navigationd", "sunnypilot.navd.navigationd", always_run),
-  PythonProcess("navdestd", "sunnypilot.navd.nav_destination_server", always_run),
-  PythonProcess("wifi_eager", "sunnypilot.navd.wifi_eager", always_run),
+  PythonProcess("navigationd", "sunnypilot.navd.navigationd", navd_enabled),
+  PythonProcess("navdestd", "sunnypilot.navd.nav_destination_server", navdestd_enabled),
+  PythonProcess("wifi_eager", "sunnypilot.navd.wifi_eager", wifi_eager_enabled),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "selfdrive.locationd.calibrationd", only_onroad),
   PythonProcess("torqued", "selfdrive.locationd.torqued", only_onroad),
