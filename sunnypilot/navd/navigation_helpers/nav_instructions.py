@@ -46,15 +46,18 @@ class NavigationInstructions:
 
     distance_to_end_of_step = max(0, current_step['distance'] - (closest_cumulative - current_step['cumulative_distance']))
 
+    # The maneuver to SHOW is the upcoming one (start of the next step), not the step we're
+    # currently driving along — otherwise the banner names the road we're already on.
     all_maneuvers: list = []
     max_maneuvers = 3
-    for idx in range(current_step_idx, min(current_step_idx + max_maneuvers, len(route['steps']))):
+    start = current_step_idx + 1
+    for j, idx in enumerate(range(start, min(start + max_maneuvers, len(route['steps'])))):
       step = route['steps'][idx]
-      if idx == current_step_idx:
-        distance = distance_to_end_of_step
-      else:
-        distance = step['cumulative_distance'] - closest_cumulative
+      distance = distance_to_end_of_step if j == 0 else step['cumulative_distance'] - closest_cumulative
       all_maneuvers.append({'distance': distance, 'type': step['maneuver'], 'modifier': step['modifier'], 'instruction': step['instruction']})
+    if not all_maneuvers:  # on the final step -> surface the arrival
+      step = route['steps'][current_step_idx]
+      all_maneuvers.append({'distance': distance_to_end_of_step, 'type': step['maneuver'], 'modifier': step['modifier'], 'instruction': step['instruction']})
 
     return {
       'distance_from_route': min_distance,
