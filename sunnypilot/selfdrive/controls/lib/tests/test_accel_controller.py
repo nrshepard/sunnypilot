@@ -282,6 +282,17 @@ class TestBrakeFloor:
     lead = FakeLead(status=True, d_rel=18.0, v_rel=-2.0, v_lead=18.0, a_lead=-3.0)
     assert c.get_min_accel(20.0, _rs(lead)) == ACCEL_MIN
 
+  def test_far_fcw_lead_is_not_critical(self):
+    # FCW can fire on a distant stationary roadside object (TSS2 ghost); a high-ttc FCW must not slam the brake
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=85.0, v_rel=-13.0, fcw=True)
+    assert c.get_min_accel(13.0, _rs(lead)) > ACCEL_MIN
+
+  def test_close_fcw_lead_uses_stock_floor(self):
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=22.0, v_rel=-5.0, v_lead=10.0, fcw=True)
+    assert c.get_min_accel(15.0, _rs(lead)) == ACCEL_MIN
+
   def test_stop_and_force_decel_use_stock_floor(self):
     c = _make(AccelPersonality.normal)
     assert c.get_min_accel(8.0, should_stop=True) == ACCEL_MIN
@@ -320,12 +331,12 @@ class TestBrakeShaping:
     assert shaped < -0.1
     assert shaped >= c.get_min_accel(14.0, _rs(lead))
 
-  def test_fast_closing_lead_brakes_before_critical_ttc(self):
+  def test_fast_closing_far_lead_uses_physics_decel(self):
     c = _make(AccelPersonality.eco)
     lead = FakeLead(status=True, d_rel=95.0, v_rel=-8.2, v_lead=20.0)
     shaped = c.shape_decel(28.4, -0.2, _rs(lead))
 
-    assert shaped < -1.2
+    assert -0.8 < shaped < -0.2
     assert shaped >= c.get_min_accel(28.4, _rs(lead))
 
   def test_far_fast_closing_lead_does_not_force_brake(self):

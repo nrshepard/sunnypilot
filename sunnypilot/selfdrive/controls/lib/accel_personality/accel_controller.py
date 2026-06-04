@@ -57,6 +57,7 @@ LEAD_RELEASE_TTC = 3.0
 LEAD_CRITICAL_TTC = 1.25
 LEAD_CRITICAL_LEAD_BRAKE = 2.0
 LEAD_CRITICAL_BRAKE_TTC = 5.0
+LEAD_FCW_CRITICAL_TTC = 4.0
 LEAD_CRITICAL_STOCK_FRAC = 0.75
 LEAD_CRITICAL_HOLD_FRAMES = max(1, int(0.8 / DT_MDL))
 LEAD_PREBRAKE_CLOSING = 0.45
@@ -64,8 +65,6 @@ LEAD_PREBRAKE_DECEL = 0.08
 LEAD_PREBRAKE_TTC = 5.0
 LEAD_FAST_CLOSING = 6.0
 LEAD_FAST_PREBRAKE_TTC = 13.0
-LEAD_FAST_DECEL_BP = [6.0, 10.0, 16.0]
-LEAD_FAST_DECEL_V = [0.85, 1.65, 2.85]
 LEAD_URGENT_SCALE = 1.15
 
 LEAD_PREBRAKE_SCALE = {
@@ -180,7 +179,7 @@ class AccelPersonalityController:
     closing_load = closing + 0.4 * lead_brake
     ttc = usable_gap / closing_load if closing_load > 0.1 else float('inf')
     required_decel = closing * closing / (2.0 * usable_gap) + LEAD_BRAKE_WEIGHT * lead_brake
-    critical = (lead.fcw or (lead_brake > LEAD_CRITICAL_LEAD_BRAKE and ttc < LEAD_CRITICAL_BRAKE_TTC) or
+    critical = ((lead.fcw and ttc < LEAD_FCW_CRITICAL_TTC) or (lead_brake > LEAD_CRITICAL_LEAD_BRAKE and ttc < LEAD_CRITICAL_BRAKE_TTC) or
                 (ttc < LEAD_CRITICAL_TTC and closing > 0.3) or required_decel > abs(ACCEL_MIN) * LEAD_CRITICAL_STOCK_FRAC)
 
     return LeadBrakeState(closing=closing, critical=critical, required_decel=required_decel, ttc=ttc)
@@ -248,11 +247,7 @@ class AccelPersonalityController:
     return LeadMpcProfile(accel_min, self.get_max_accel(v_ego), self.get_jerk_scale(), self.get_t_follow())
 
   def _lead_decel_target(self, lead_state: LeadBrakeState) -> float:
-    target = -lead_state.required_decel * LEAD_URGENT_SCALE
-    if lead_state.closing > LEAD_FAST_CLOSING:
-      fast_target = -float(np.interp(lead_state.closing, LEAD_FAST_DECEL_BP, LEAD_FAST_DECEL_V))
-      target = min(target, fast_target)
-    return max(ACCEL_MIN, target)
+    return max(ACCEL_MIN, -lead_state.required_decel * LEAD_URGENT_SCALE)
 
   def shape_decel(self, v_ego: float, a_target: float, radarstate=None, should_stop: bool = False, force_decel: bool = False) -> float:
     if not self._enabled or should_stop or force_decel:
