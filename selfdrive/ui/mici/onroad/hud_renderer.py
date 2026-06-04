@@ -1,4 +1,5 @@
 import pyray as rl
+import time
 from math import pi, cos, sin
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -10,6 +11,14 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import FirstOrderFilter
 from cereal import log
+
+# Telemetry: pin the UI-process + NavManeuver per-frame cost into the streaming logger
+# so a CPU overdraw can be isolated to the widget vs. the rest of the heavy UI process.
+# Guarded import — UI must never crash if the navd tree is absent.
+try:
+  from openpilot.sunnypilot.navd import navlog as _navlog
+except Exception:
+  _navlog = None
 
 EventName = log.OnroadEvent.EventName
 
@@ -130,14 +139,44 @@ class NavManeuver(Widget):
           "sharp_l":-135,"sharp_r":135,"uturn":170,
           "merge_l":-45,"merge_r":45,"fork_l":-30,"fork_r":30,"exit_l":-70,"exit_r":70}
 
+  HB_PERIOD = 5.0          # telemetry emit cadence (s)
+
   def __init__(self):
     super().__init__()
     self._alpha = FirstOrderFilter(0.0, 0.15, 1 / gui_app.target_fps)
     self._kindcur = "straight"
     self._dist = 0.0
+    self._ttm = 1e9
     self._frame = -1
+    # --- telemetry counters (window-accumulated, emitted every HB_PERIOD) ---
+    self._hb = _navlog.Heartbeat("nav_ui") if _navlog else None   # whole UI-proc cpu/hz/rss
+    self._t_upd = 0.0        # accumulated _update_state seconds this window
+    self._t_drw = 0.0        # accumulated _render seconds this window (active frames only)
+    self._n_frame = 0        # frames seen this window
+    self._n_drawn = 0        # frames actually drawn (bar visible) this window
+    self._win_t0 = time.time()
+
+  def _emit_telemetry(self):
+    # per-widget cost: avg update micros over all frames, avg draw micros over drawn frames,
+    # and what fraction of frames actually drew (the bar is usually idle).
+    if _navlog is None:
+      return
+    now = time.time(); dt = now - self._win_t0
+    if dt < self.HB_PERIOD:
+      return
+    nf = max(self._n_frame, 1)
+    _navlog.log("nav_hud", ev="hb",
+                fps=round(self._n_frame / dt, 1),
+                upd_us=round(1e6 * self._t_upd / nf, 1),
+                draw_us=round(1e6 * self._t_drw / max(self._n_drawn, 1), 1),
+                active_pct=round(100.0 * self._n_drawn / nf),
+                frames=self._n_frame, drawn=self._n_drawn)
+    self._t_upd = self._t_drw = 0.0
+    self._n_frame = self._n_drawn = 0
+    self._win_t0 = now
 
   def _update_state(self):
+    _t0 = time.perf_counter()
     sm = ui_state.sm
     # recompute the maneuver only when a fresh navigationd message arrives (cheap rest-of-time)
     if sm.updated.get("navigationd"):
@@ -153,11 +192,18 @@ class NavManeuver(Widget):
     v = max(float(ui_state.sm["carState"].vEgo), 0.1)
     self._ttm = self._dist / v if self._dist > 0 else 1e9
     self._alpha.update(1.0 if self._ttm <= self.WINDOW_S else 0.0)
+    # telemetry: per-frame cost + UI-proc heartbeat (both gated by navlog mode)
+    self._t_upd += time.perf_counter() - _t0
+    self._n_frame += 1
+    if self._hb is not None:
+      self._hb.tick()
+    self._emit_telemetry()
 
   def _render(self, rect):
     a = self._alpha.x
     if a < 1e-2:
       return
+    _t0 = time.perf_counter()
     frac = max(0.0, min(1.0, self._ttm / self.WINDOW_S))   # 1 far -> 0 at maneuver
     urgent = frac < 0.25
     col = rl.Color(255, 170, 40, int(255 * a)) if urgent else rl.Color(255, 255, 255, int(255 * a))
@@ -169,6 +215,9 @@ class NavManeuver(Widget):
     rl.draw_rectangle(int(bx), int(by), self.BAR_W, int(self.BAR_H * frac), col)
     # icon above the bar
     self._icon(bx + self.BAR_W / 2, by - 34, self.ICON / 2, col)
+    # telemetry: accumulate this active frame's draw cost
+    self._t_drw += time.perf_counter() - _t0
+    self._n_drawn += 1
 
   def _icon(self, cx, cy, s, col):
     import math

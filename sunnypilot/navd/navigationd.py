@@ -32,7 +32,7 @@ class Navigationd:
 
     self.sm = messaging.SubMaster(['carState', 'liveLocationKalman'])
     self.pm = messaging.PubMaster(['navigationd'])
-    self.rk = Ratekeeper(3)  # 3 Hz
+    self.rk = Ratekeeper(1)  # 1 Hz — maneuvers change at road-trip pace; HUD interpolates per-frame
     self.hb = navlog.Heartbeat("navigationd")
 
     self.route = None
