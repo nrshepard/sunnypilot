@@ -1,0 +1,58 @@
+# C4 (mici) turn-by-turn maneuvers — build & destination input
+
+Backport of sunnypilot's navd to the Comma 4 `release-mici` line. **Maneuvers only**
+(banner + driving-model lane context). No on-screen moving map by design — the C4
+screen is tiny and a map widget is a separate from-scratch raylib build.
+
+## What this branch adds
+- `sunnypilot/navd/*` — the navigation daemon (geocode + route + maneuvers via Mapbox).
+- `sunnypilot/navd/nav_destination_server.py` — tailnet HTTP setter (Siri Shortcut target).
+- `cereal/custom.capnp` — `CustomReserved10` → `struct Navigationd` (same id `0xcb9fd56c7057593a`, the slot sunnypilot reserved for it).
+- `cereal/log.capnp` — union slot `@136` → `navigationd :Custom.Navigationd`.
+- `cereal/services.py` — `navigationd` @ 3 Hz.
+- `system/manager/process_config.py` — launches `navigationd` (onroad) + `navdestd` (always).
+
+## Params it uses
+- `MapboxToken` — public `pk.` token (geocode + directions). **Required.**
+- `MapboxRoute` — destination place-name string (what the Siri endpoint writes).
+- `AllowNavigation` — on/off (endpoint sets it with the destination).
+
+## Build on the car (into a SEPARATE slot — daily driver stays pristine)
+```sh
+# 1. clone fork's mici-nav into a new slot (do NOT touch the live sunnypilot-mici slot)
+SLOT=/data/op_slots/sunnypilot-mici-nav
+git clone -b mici-nav https://github.com/nrshepard/sunnypilot.git "$SLOT"
+cd "$SLOT" && git submodule update --init --recursive
+
+# 2. set the Mapbox public token (pulled from Helsinki secrets, see install helper)
+printf '%s' "$MAPBOX_PUBLIC_TOKEN" > /data/params/d/MapboxToken
+
+# 3. regenerate cereal capnp + build
+cd "$SLOT" && scons -j$(nproc)        # capnp schema regen happens here; build fails LOUDLY if the schema patch is off (safe — nothing flashes)
+
+# 4. swap to the new slot with the existing opswap manager, then reboot
+opswap sunnypilot-mici-nav && reboot
+```
+Revert anytime: `opswap sunnypilot-mici` (10-second fallback to the known-good slot).
+
+## Destination input — Siri Shortcut (phase 1)
+The device runs `navdestd` on **:5005**, reachable over your tailnet.
+
+**iOS Shortcut "Navigate Comma":**
+1. Action: *Ask for Input* (Text) → prompt "Where to?"  (or *Dictate Text* for voice)
+2. Action: *URL* → `http://<comma-tailscale-ip>:5005/set?dest=[Provided Input]`
+   (URL-encode the input; Shortcuts' "URL Encode" action on the text first)
+3. Action: *Get Contents of URL* → Method GET
+4. (optional) *Show Result* of the response JSON.
+Add it to Siri: "Hey Siri, Navigate Comma" → speak the address.
+
+Cancel route: GET `http://<comma-ip>:5005/cancel`.  Status: `/status`.
+
+## Also works
+- **Tell the assistant** "drive to <address>" → it writes `MapboxRoute` over SSH (no app needed).
+
+## Future (not in this branch)
+- On-device favorites/recents tap-list (no-keyboard destination on the tiny screen).
+- Minimal HUD chevron + distance + street drawn by `selfdrive/ui/mici/onroad/hud_renderer.py`.
+- Read the **factory nav** turn-by-turn guidance off the CAN bus (Hyundai broadcasts maneuver
+  arrows/distance to the cluster) — bypasses Mapbox entirely. Needs CAN reverse-engineering on the Palisade.
