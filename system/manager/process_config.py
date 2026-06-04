@@ -116,6 +116,9 @@ def navdestd_enabled(started, params, CP) -> bool:
 def wifi_eager_enabled(started, params, CP) -> bool:
   return nav_flag('wifi_eager')
 
+def can_capture_enabled(started, params, CP) -> bool:
+  return nav_flag('can_capture')
+
 
 procs = [
   DaemonProcess("manage_athenad", "system.athena.manage_athenad", "AthenadPid"),
@@ -142,6 +145,7 @@ procs = [
   PythonProcess("navigationd", "sunnypilot.navd.navigationd", navd_enabled),
   PythonProcess("navdestd", "sunnypilot.navd.nav_destination_server", navdestd_enabled),
   PythonProcess("wifi_eager", "sunnypilot.navd.wifi_eager", wifi_eager_enabled),
+  PythonProcess("can_capture", "sunnypilot.navd.can_capture", can_capture_enabled),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "selfdrive.locationd.calibrationd", only_onroad),
   PythonProcess("torqued", "selfdrive.locationd.torqued", only_onroad),

@@ -97,73 +97,99 @@ class TurnIntent(Widget):
 
 
 class NavManeuver(Widget):
-  """MVP turn-by-turn signal: a direction chevron + distance + next-street text.
-  Reads the navigationd message (Custom.Navigationd). Text/vector only, no assets.
-  Tune sizes/placement on-device; this is a first-pass layout."""
+  """Minimal turn-by-turn cue on the RIGHT edge: a thin vertical bar that starts full
+  and drains UP to zero as you approach, with a small vector action-icon above it.
+  Shows only inside a ~10s time-to-maneuver window (so lead scales with speed).
+  Throttled: maneuver state recomputed only on a fresh navigationd message; drawn
+  only while active. Vector-drawn (no assets)."""
+  WINDOW_S = 10.0          # show when time-to-maneuver <= this
+  BAR_W = 10
+  BAR_H = 180
+  ICON = 30
 
-  _ANGLES = {
-    "left": pi, "slight left": -3 * pi / 4, "sharp left": pi,
-    "right": 0.0, "slight right": -pi / 4, "sharp right": 0.0,
-    "straight": -pi / 2, "uturn": pi / 2,
-  }
+  # mapbox (type, modifier) -> our icon kind
+  @staticmethod
+  def _kind(mtype, mod):
+    t = (mtype or "").lower(); m = (mod or "").lower()
+    if "arrive" in t: return "flag"
+    if "depart" in t: return "dot"
+    if "roundabout" in t or "rotary" in t: return "round"
+    if "merge" in t: return "merge_r" if "right" in m else "merge_l"
+    if "ramp" in t or "exit" in t: return "exit_r" if "right" in m else "exit_l"
+    if "fork" in t or "keep" in t: return "fork_r" if "right" in m else "fork_l"
+    if "uturn" in m: return "uturn"
+    if "sharp left" in m: return "sharp_l"
+    if "sharp right" in m: return "sharp_r"
+    if "slight left" in m: return "slight_l"
+    if "slight right" in m: return "slight_r"
+    if "left" in m: return "left"
+    if "right" in m: return "right"
+    return "straight"
+
+  _ANG = {"straight":0,"left":-90,"right":90,"slight_l":-45,"slight_r":45,
+          "sharp_l":-135,"sharp_r":135,"uturn":170,
+          "merge_l":-45,"merge_r":45,"fork_l":-30,"fork_r":30,"exit_l":-70,"exit_r":70}
 
   def __init__(self):
     super().__init__()
-    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
-    self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
     self._alpha = FirstOrderFilter(0.0, 0.15, 1 / gui_app.target_fps)
-    self._active = False
-    self._distance_m = 0.0
-    self._modifier = ""
-    self._mtype = ""
-    self._street = ""
+    self._kindcur = "straight"
+    self._dist = 0.0
+    self._frame = -1
 
-  def _update_state(self) -> None:
-    try:
-      nav = ui_state.sm["navigationd"]
-      mans = nav.allManeuvers
-      self._active = bool(nav.valid) and len(mans) > 0
-      if self._active:
-        m0 = mans[0]
-        self._distance_m = float(m0.distance)
-        self._modifier = m0.modifier or ""
-        self._mtype = m0.type or ""
-        self._street = (m0.instruction or nav.bannerInstructions or "")
-    except (KeyError, AttributeError):
-      self._active = False
+  def _update_state(self):
+    sm = ui_state.sm
+    # recompute the maneuver only when a fresh navigationd message arrives (cheap rest-of-time)
+    if sm.updated.get("navigationd"):
+      try:
+        nav = sm["navigationd"]; mans = nav.allManeuvers
+        if nav.valid and len(mans):
+          m0 = mans[0]; self._kindcur = self._kind(m0.type, m0.modifier); self._dist = float(m0.distance)
+        else:
+          self._dist = 0.0
+      except (KeyError, AttributeError):
+        self._dist = 0.0
+    # time-to-maneuver gate (speed-aware)
+    v = max(float(ui_state.sm["carState"].vEgo), 0.1)
+    self._ttm = self._dist / v if self._dist > 0 else 1e9
+    self._alpha.update(1.0 if self._ttm <= self.WINDOW_S else 0.0)
 
-  def _angle(self) -> float:
-    key = (self._modifier or self._mtype or "straight").lower()
-    return self._ANGLES.get(key, -pi / 2)
-
-  def _fmt_dist(self, m: float) -> str:
-    if ui_state.is_metric:
-      return f"{int(round(m / 10) * 10)} m" if m < 1000 else f"{m / 1000:.1f} km"
-    ft = m * 3.28084
-    return f"{int(round(ft / 10) * 10)} ft" if ft < 1000 else f"{ft / 5280:.1f} mi"
-
-  def _draw_chevron(self, cx: float, cy: float, length: float, thick: float, ang: float, color) -> None:
-    apex = rl.Vector2(cx + length * cos(ang), cy + length * sin(ang))
-    arm_a = rl.Vector2(cx + length * cos(ang + 2.3562), cy + length * sin(ang + 2.3562))
-    arm_b = rl.Vector2(cx + length * cos(ang - 2.3562), cy + length * sin(ang - 2.3562))
-    rl.draw_line_ex(apex, arm_a, thick, color)
-    rl.draw_line_ex(apex, arm_b, thick, color)
-
-  def _render(self, rect: rl.Rectangle) -> None:
-    a = self._alpha.update(1.0 if self._active else 0.0)
+  def _render(self, rect):
+    a = self._alpha.x
     if a < 1e-2:
       return
-    panel_w, panel_h = 560, 150
-    px = rect.x + rect.width / 2 - panel_w / 2
-    py = rect.y + 30
-    rl.draw_rectangle(int(px), int(py), panel_w, panel_h, rl.Color(0, 0, 0, int(150 * a)))
-    white = rl.Color(255, 255, 255, int(255 * a))
-    self._draw_chevron(px + 70, py + panel_h / 2, 50, 14, self._angle(), white)
-    rl.draw_text_ex(self._font_bold, self._fmt_dist(self._distance_m),
-                    rl.Vector2(px + 150, py + 18), 72, 0, white)
-    street = (self._street or "")[:30]
-    rl.draw_text_ex(self._font_medium, street,
-                    rl.Vector2(px + 150, py + 100), 36, 0, rl.Color(255, 255, 255, int(220 * a)))
+    frac = max(0.0, min(1.0, self._ttm / self.WINDOW_S))   # 1 far -> 0 at maneuver
+    urgent = frac < 0.25
+    col = rl.Color(255, 170, 40, int(255 * a)) if urgent else rl.Color(255, 255, 255, int(255 * a))
+    dim = rl.Color(255, 255, 255, int(60 * a))
+    bx = rect.x + rect.width - 22 - self.BAR_W
+    by = rect.y + rect.height * 0.42
+    # track + fill (anchored at top, shrinks upward as you approach)
+    rl.draw_rectangle(int(bx), int(by), self.BAR_W, self.BAR_H, dim)
+    rl.draw_rectangle(int(bx), int(by), self.BAR_W, int(self.BAR_H * frac), col)
+    # icon above the bar
+    self._icon(bx + self.BAR_W / 2, by - 34, self.ICON / 2, col)
+
+  def _icon(self, cx, cy, s, col):
+    import math
+    k = self._kindcur; th = 4
+    if k == "flag":
+      rl.draw_line_ex(rl.Vector2(cx - s*0.6, cy - s), rl.Vector2(cx - s*0.6, cy + s), th, col)
+      rl.draw_rectangle(int(cx - s*0.6), int(cy - s), int(s*1.2), int(s*0.8), col)
+      return
+    if k == "dot":
+      rl.draw_circle(int(cx), int(cy), s*0.5, col); return
+    if k == "round":
+      rl.draw_circle_lines(int(cx), int(cy), s*0.7, col)
+      rl.draw_line_ex(rl.Vector2(cx, cy), rl.Vector2(cx + s, cy - s), th, col); return
+    ang = math.radians(self._ANG.get(k, 0))
+    bx2, by2 = cx, cy + s
+    tx, ty = cx + s*math.sin(ang), cy - s*math.cos(ang)
+    rl.draw_line_ex(rl.Vector2(bx2, by2), rl.Vector2(cx, cy), th, col)   # stem
+    rl.draw_line_ex(rl.Vector2(cx, cy), rl.Vector2(tx, ty), th, col)     # turn
+    for da in (math.radians(150), math.radians(-150)):                   # arrowhead
+      hx = tx + s*0.5*math.sin(ang + da); hy = ty - s*0.5*math.cos(ang + da)
+      rl.draw_line_ex(rl.Vector2(tx, ty), rl.Vector2(hx, hy), th, col)
 
 
 class HudRenderer(Widget):
