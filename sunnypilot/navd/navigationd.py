@@ -29,7 +29,7 @@ class Navigationd:
     self.mapbox = MapboxIntegration()
     self.nav_instructions = NavigationInstructions()
 
-    self.sm = messaging.SubMaster(['carControlSP', 'liveLocationKalman'])
+    self.sm = messaging.SubMaster(['carState', 'liveLocationKalman'])
     self.pm = messaging.PubMaster(['navigationd'])
     self.rk = Ratekeeper(3)  # 3 Hz
 
@@ -135,7 +135,7 @@ class Navigationd:
     nav_data: dict = {}
     if self.allow_navigation and self.route and self.last_position is not None:
       if progress := self.nav_instructions.get_route_progress(self.last_position.latitude, self.last_position.longitude):
-        v_ego = float(max(self.sm['carControlSP'].speed, 0.0))
+        v_ego = float(max(self.sm['carState'].vEgo, 0.0))
         nav_data['upcoming_turn'] = self.nav_instructions.get_upcoming_turn_from_progress(progress, self.last_position.latitude,
                                                                                           self.last_position.longitude, v_ego)
         speed_limit, _ = progress['current_maxspeed']
