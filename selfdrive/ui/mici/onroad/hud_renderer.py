@@ -1,4 +1,5 @@
 import pyray as rl
+from math import pi, cos, sin
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
@@ -95,6 +96,76 @@ class TurnIntent(Widget):
       self._turn_intent_rotation_filter.update(0)
 
 
+class NavManeuver(Widget):
+  """MVP turn-by-turn signal: a direction chevron + distance + next-street text.
+  Reads the navigationd message (Custom.Navigationd). Text/vector only, no assets.
+  Tune sizes/placement on-device; this is a first-pass layout."""
+
+  _ANGLES = {
+    "left": pi, "slight left": -3 * pi / 4, "sharp left": pi,
+    "right": 0.0, "slight right": -pi / 4, "sharp right": 0.0,
+    "straight": -pi / 2, "uturn": pi / 2,
+  }
+
+  def __init__(self):
+    super().__init__()
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+    self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+    self._alpha = FirstOrderFilter(0.0, 0.15, 1 / gui_app.target_fps)
+    self._active = False
+    self._distance_m = 0.0
+    self._modifier = ""
+    self._mtype = ""
+    self._street = ""
+
+  def _update_state(self) -> None:
+    try:
+      nav = ui_state.sm["navigationd"]
+      mans = nav.allManeuvers
+      self._active = bool(nav.valid) and len(mans) > 0
+      if self._active:
+        m0 = mans[0]
+        self._distance_m = float(m0.distance)
+        self._modifier = m0.modifier or ""
+        self._mtype = m0.type or ""
+        self._street = (m0.instruction or nav.bannerInstructions or "")
+    except (KeyError, AttributeError):
+      self._active = False
+
+  def _angle(self) -> float:
+    key = (self._modifier or self._mtype or "straight").lower()
+    return self._ANGLES.get(key, -pi / 2)
+
+  def _fmt_dist(self, m: float) -> str:
+    if ui_state.is_metric:
+      return f"{int(round(m / 10) * 10)} m" if m < 1000 else f"{m / 1000:.1f} km"
+    ft = m * 3.28084
+    return f"{int(round(ft / 10) * 10)} ft" if ft < 1000 else f"{ft / 5280:.1f} mi"
+
+  def _draw_chevron(self, cx: float, cy: float, length: float, thick: float, ang: float, color) -> None:
+    apex = rl.Vector2(cx + length * cos(ang), cy + length * sin(ang))
+    arm_a = rl.Vector2(cx + length * cos(ang + 2.3562), cy + length * sin(ang + 2.3562))
+    arm_b = rl.Vector2(cx + length * cos(ang - 2.3562), cy + length * sin(ang - 2.3562))
+    rl.draw_line_ex(apex, arm_a, thick, color)
+    rl.draw_line_ex(apex, arm_b, thick, color)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    a = self._alpha.update(1.0 if self._active else 0.0)
+    if a < 1e-2:
+      return
+    panel_w, panel_h = 560, 150
+    px = rect.x + rect.width / 2 - panel_w / 2
+    py = rect.y + 30
+    rl.draw_rectangle(int(px), int(py), panel_w, panel_h, rl.Color(0, 0, 0, int(150 * a)))
+    white = rl.Color(255, 255, 255, int(255 * a))
+    self._draw_chevron(px + 70, py + panel_h / 2, 50, 14, self._angle(), white)
+    rl.draw_text_ex(self._font_bold, self._fmt_dist(self._distance_m),
+                    rl.Vector2(px + 150, py + 18), 72, 0, white)
+    street = (self._street or "")[:30]
+    rl.draw_text_ex(self._font_medium, street,
+                    rl.Vector2(px + 150, py + 100), 36, 0, rl.Color(255, 255, 255, int(220 * a)))
+
+
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
@@ -117,6 +188,7 @@ class HudRenderer(Widget):
 
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
+    self._nav_maneuver = NavManeuver()
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
@@ -178,6 +250,8 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_steering_wheel(rect)
+
+    self._nav_maneuver.render(rect)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel

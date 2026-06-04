@@ -51,8 +51,14 @@ Cancel route: GET `http://<comma-ip>:5005/cancel`.  Status: `/status`.
 ## Also works
 - **Tell the assistant** "drive to <address>" → it writes `MapboxRoute` over SSH (no app needed).
 
+## On-screen signal (in this branch — MVP)
+`NavManeuver` widget in `selfdrive/ui/mici/onroad/hud_renderer.py` draws a direction
+**chevron + distance + next-street**, top-center, fading in when a maneuver is live.
+Vector/text only (no image assets). UI subscribes to `navigationd` via `ui_state.py`.
+Sizes/placement are first-pass — tune on-device.
+
 ## Future (not in this branch)
 - On-device favorites/recents tap-list (no-keyboard destination on the tiny screen).
-- Minimal HUD chevron + distance + street drawn by `selfdrive/ui/mici/onroad/hud_renderer.py`.
+- Audible chime ~200m before a maneuver.
 - Read the **factory nav** turn-by-turn guidance off the CAN bus (Hyundai broadcasts maneuver
   arrows/distance to the cluster) — bypasses Mapbox entirely. Needs CAN reverse-engineering on the Palisade.

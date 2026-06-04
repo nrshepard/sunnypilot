@@ -60,6 +60,7 @@ class UIState(UIStateSP):
         "carControl",
         "liveParameters",
         "rawAudioData",
+        "navigationd",
       ] + self.sm_services_ext
     )
 
