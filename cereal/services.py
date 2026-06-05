@@ -52,7 +52,7 @@ _services: dict[str, tuple] = {
   "lateralManeuverPlan": (True, 20.),
   "driverAssistance": (True, 20., 20),
   "procLog": (True, 0.5, 15, QueueSize.BIG),
-  "gpsLocationExternal": (True, 10., 10),
+  "gpsLocationExternal": (True, 4., 10),  # mici: ublox runs ~7.9Hz (healthy: 15 sats, 1.4m); 10Hz spec floored at 8.0Hz tripped commIssue. 4Hz -> 3.2Hz floor.
   "gpsLocation": (True, 1., 1),
   "ubloxGnss": (True, 10.),
   "qcomGnss": (True, 2.),
