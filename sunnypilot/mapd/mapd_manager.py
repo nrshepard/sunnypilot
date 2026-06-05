@@ -14,6 +14,7 @@ from datetime import datetime
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
+from openpilot.sunnypilot.mapd.proc_sched import config_background_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
@@ -114,7 +115,7 @@ def update_osm_db() -> None:
 
 def main_thread():
   update_installed_version(VERSION, params)
-  config_realtime_process([0, 1, 2, 3], 5)
+  config_background_process([0, 1, 2, 3])  # was SCHED_FIFO prio5 -> starved monitoring; now niced
 
   rk = Ratekeeper(1, print_delay_threshold=None)
   live_map_sp = OsmMapData()

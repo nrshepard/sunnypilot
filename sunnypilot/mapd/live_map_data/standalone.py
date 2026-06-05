@@ -13,6 +13,7 @@ import threading
 import traceback
 
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
+from openpilot.sunnypilot.mapd.proc_sched import config_background_process
 from openpilot.sunnypilot.mapd.live_map_data import get_debug
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
 
@@ -23,7 +24,7 @@ def excepthook(args):
 
 
 def live_map_data_sp_thread():
-  config_realtime_process([0, 1, 2, 3], 5)
+  config_background_process([0, 1, 2, 3])  # was SCHED_FIFO prio5 -> starved monitoring; now niced
 
   live_map_sp = OsmMapData()
   rk = Ratekeeper(1, print_delay_threshold=None)
