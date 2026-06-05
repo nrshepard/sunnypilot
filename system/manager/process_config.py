@@ -93,7 +93,12 @@ def is_stock_model(started, params, CP: car.CarParams) -> bool:
   return bool(get_active_model_runner(params, not started) == custom.ModelManagerSP.Runner.stock)
 
 def mapd_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return bool(os.path.exists(Paths.mapd_root()))
+  # Gate the map matcher on offline-OSM actually being enabled. Previously this returned
+  # True whenever the binary existed, so mapd ran UNCONDITIONALLY -- independent of the
+  # nav flag -- mmapping the OSM DB and thrashing the page cache even with maps off.
+  # That was the proven cause of cascading commIssue ("take control immediately") and
+  # the car refusing to engage. No OsmLocal => no consumer => don't run it.
+  return bool(os.path.exists(Paths.mapd_root())) and params.get_bool("OsmLocal")
 
 def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   if not params.get_bool("OnroadUploads"):

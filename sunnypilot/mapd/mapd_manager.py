@@ -98,6 +98,48 @@ def filter_nations_and_states(nations: list[str], states: list[str] | None = Non
   return nations, states or []
 
 
+# --- OSM working-set bounding -------------------------------------------------------
+# ROOT CAUSE (proven from on-device diag logs): the map matcher mmaps the downloaded
+# OSM DB. The legacy default OsmStateName="All" resolves (via filter_nations_and_states)
+# to the nation "US", so mapd loads the ENTIRE United States road graph -- multi-GB.
+# On a device with ~31 MB free + 1.5 GB page cache, every map-match query evicts pages,
+# kswapd churns at ~30% CPU, and EVERY service (liveTorqueParameters, driverMonitoring,
+# liveParameters, modelDataV2SP ...) intermittently misses its deadline -> selfdrived
+# raises commIssue -> "take control immediately" -> no engage. mapd's own RSS is only
+# ~140 MB; the damage is page-cache thrash from the oversized mmap, not a leak.
+#
+# FIX: keep OSMDownloadBounds tracking a ~80 km box around the car so the resident
+# working set stays small and always covers the road ahead. Hysteresis (half-radius)
+# avoids rewriting every tick.
+OSM_BOUND_RADIUS_DEG = float(os.environ.get("OSM_BOUND_RADIUS_DEG", "0.75"))  # ~83 km
+
+
+def _osm_bounds_for(lat: float, lon: float, r: float = OSM_BOUND_RADIUS_DEG) -> dict:
+  return {"min_lat": round(lat - r, 4), "min_lon": round(lon - r, 4),
+          "max_lat": round(lat + r, 4), "max_lon": round(lon + r, 4)}
+
+
+def update_osm_bounds() -> None:
+  """Keep OSMDownloadBounds following the car so mapd never holds a whole nation."""
+  try:
+    pos = json.loads(mem_params.get("LastGPSPosition") or "{}")
+    lat, lon = pos.get("latitude"), pos.get("longitude")
+    if lat is None or lon is None:
+      return
+    cur_raw = mem_params.get("OSMDownloadBounds")
+    cur = json.loads(cur_raw) if cur_raw else None
+    if cur:
+      cy = (cur["min_lat"] + cur["max_lat"]) / 2.0
+      cx = (cur["min_lon"] + cur["max_lon"]) / 2.0
+      if abs(lat - cy) < OSM_BOUND_RADIUS_DEG / 2 and abs(lon - cx) < OSM_BOUND_RADIUS_DEG / 2:
+        return  # still well inside the current box -> no churn
+    bounds = _osm_bounds_for(lat, lon)
+    mem_params.put("OSMDownloadBounds", json.dumps(bounds))
+    cloudlog.warning(f"mapd: OSM working-set bounded to {bounds}")
+  except Exception:
+    cloudlog.exception("mapd: update_osm_bounds failed")
+
+
 def update_osm_db() -> None:
   if params.get_bool("OsmDbUpdatesCheck"):
     cleanup_old_osm_data(get_files_for_cleanup())
@@ -106,8 +148,7 @@ def update_osm_db() -> None:
     filtered_nations, filtered_states = filter_nations_and_states([country], [state])
     request_refresh_osm_location_data(filtered_nations, filtered_states)
 
-  if not mem_params.get("OSMDownloadBounds"):
-    mem_params.put("OSMDownloadBounds", "")
+  update_osm_bounds()   # bound the working set to a box around the car (anti-thrash)
 
   if not mem_params.get("LastGPSPosition"):
     mem_params.put("LastGPSPosition", "{}")
