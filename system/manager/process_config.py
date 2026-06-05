@@ -194,7 +194,10 @@ procs += [
   PythonProcess("backup_manager", "sunnypilot.sunnylink.backups.manager", and_(only_offroad, sunnylink_ready_shim)),
 
   # mapd
-  NativeProcess("mapd", Paths.mapd_root(), ["bash", "-c", f"{MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
+  # mapd is the compiled map-matcher binary; its child matcher thread inherits this.
+  # ionice idle + nice 19 + pinned to cores 0-3 (off controlsd@4 / modeld@7) so it can
+  # never starve the safety/monitoring loop (was the nav-flag CPU-starvation cause).
+  NativeProcess("mapd", Paths.mapd_root(), ["bash", "-c", f"exec ionice -c3 nice -n19 taskset -c 0-3 {MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
   PythonProcess("mapd_manager", "sunnypilot.mapd.mapd_manager", always_run),
 
   # locationd

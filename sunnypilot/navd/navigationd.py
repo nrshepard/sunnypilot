@@ -4,6 +4,7 @@ Copyright (c) 2021-, James Vecellio, Haibin Wen, sunnypilot, and a number of oth
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import os
 import threading
 import time
 from math import degrees
@@ -229,6 +230,12 @@ class Navigationd:
 def main():
   # navigationd is the always-on nav daemon — own it as the device-wide system
   # stats emitter (cpu/mem/disk/temp on its own thread, independent of the nav loop).
+  # Run low-priority (nice 19, SCHED_OTHER) so the 1 Hz nav loop never competes with
+  # the safety/monitoring procs — part of the nav-flag CPU-starvation fix.
+  try:
+    os.nice(19)
+  except Exception:
+    pass
   navlog.start_system_monitor()
   nav = Navigationd()
   nav.run()
