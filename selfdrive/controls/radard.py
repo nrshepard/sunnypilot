@@ -270,7 +270,10 @@ class RadarD:
 
 # fuses camera and radar data for best lead detection
 def main() -> None:
-  config_realtime_process(5, Priority.CTRL_LOW)
+  # mici: was core 5 (shared w/ plannerd) -> starved 92% (sched wait) -> radarState
+  # invalid -> commIssue. Move to core 7 (modeld, CPU-light) so radar always runs;
+  # leaves core 5 to plannerd alone.
+  config_realtime_process(7, Priority.CTRL_LOW)
 
   # wait for stats about the car to come in from controls
   cloudlog.info("radard is waiting for CarParams")

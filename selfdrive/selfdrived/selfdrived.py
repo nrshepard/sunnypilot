@@ -617,7 +617,10 @@ class SelfdriveD(CruiseHelper):
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # mici: was core 4 (shared w/ controlsd+card) -> starved 61% (sched wait), causing
+  # false commIssue/"take control". Move to core 6 (only camerad, ~idle) so the safety
+  # monitor always gets CPU; frees core 4 for controlsd+card.
+  config_realtime_process(6, Priority.CTRL_HIGH)
   s = SelfdriveD()
   s.run()
 
