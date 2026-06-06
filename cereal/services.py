@@ -102,7 +102,7 @@ _services: dict[str, tuple] = {
   "liveMapDataSP": (True, 1., 1),
   "modelDataV2SP": (True, 20., None, QueueSize.BIG),
   "liveLocationKalman": (True, 20.),
-  "navigationd": (True, 1.),
+  "navigationd": (False, 1.),  # T3: should_log=False — don't let any logger serialize the custom build-free slot
 
   # debug
   "uiDebug": (True, 0., 1),
