@@ -52,6 +52,20 @@ class DesireHelper:
     self.lane_turn_controller = LaneTurnController(self)
     self.lane_turn_direction = TurnDirection.none
 
+    # nav-driven desire (route-steering), flag-gated + build-free. Default OFF.
+    # Flag: /data/navd/flags/navsteer  (toggle with `ctk flags on/off navsteer`, reboot to (de)instantiate).
+    # When ON, a nav maneuver (navd.upcomingTurn) injects a turn/keep Desire IFF the
+    # driver isn't already commanding one. This rides the SAME desire path the model
+    # already executes for blinker low-speed turns. EXPERIMENTAL / supervised L2.
+    self.nav_desires = None
+    try:
+      from openpilot.sunnypilot.navd.nav_flags import enabled as _nav_flag
+      if _nav_flag('navsteer'):
+        from openpilot.sunnypilot.navd.navigation_desires.navigation_desires import NavigationDesires
+        self.nav_desires = NavigationDesires()
+    except Exception:
+      self.nav_desires = None
+
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
@@ -131,6 +145,17 @@ class DesireHelper:
       self.desire = TURN_DESIRES[self.lane_turn_direction]
     else:
       self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
+
+    # Nav-driven desire: only when the driver isn't already commanding a maneuver
+    # (no blinker turn, no active/pending lane change). Flag-gated via instantiation above.
+    if self.nav_desires is not None and self.desire == log.Desire.none \
+       and self.lane_change_state == LaneChangeState.off:
+      try:
+        nav_desire = self.nav_desires.update(carstate, lateral_active)
+        if nav_desire != log.Desire.none:
+          self.desire = nav_desire
+      except Exception:
+        pass
 
     # Send keep pulse once per second during LaneChangeStart.preLaneChange
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.laneChangeStarting):

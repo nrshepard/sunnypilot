@@ -108,10 +108,11 @@ class TurnIntent(Widget):
 class NavManeuver(Widget):
   """Minimal turn-by-turn cue on the RIGHT edge: a thin vertical bar that starts full
   and drains UP to zero as you approach, with a small vector action-icon above it.
-  Shows only inside a ~10s time-to-maneuver window (so lead scales with speed).
+  Persistent: shown whenever there is a valid next maneuver; the bar sits full when
+  far and drains over the final WINDOW_S seconds as you approach (lead scales with speed).
   Throttled: maneuver state recomputed only on a fresh navigationd message; drawn
   only while active. Vector-drawn (no assets)."""
-  WINDOW_S = 10.0          # show when time-to-maneuver <= this
+  WINDOW_S = 10.0          # drain window: bar fills->empties over the last WINDOW_S to the turn
   BAR_W = 10
   BAR_H = 180
   ICON = 30
@@ -188,10 +189,12 @@ class NavManeuver(Widget):
           self._dist = 0.0
       except (KeyError, AttributeError):
         self._dist = 0.0
-    # time-to-maneuver gate (speed-aware)
+    # time-to-maneuver (speed-aware) — used for the drain animation only.
     v = max(float(ui_state.sm["carState"].vEgo), 0.1)
     self._ttm = self._dist / v if self._dist > 0 else 1e9
-    self._alpha.update(1.0 if self._ttm <= self.WINDOW_S else 0.0)
+    # Persistent visibility: show whenever there's a valid next maneuver (not just the
+    # final WINDOW_S). Bar sits full when far and drains over the last WINDOW_S seconds.
+    self._alpha.update(1.0 if self._dist > 0 else 0.0)
     # telemetry: per-frame cost + UI-proc heartbeat (both gated by navlog mode)
     self._t_upd += time.perf_counter() - _t0
     self._n_frame += 1

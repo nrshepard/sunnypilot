@@ -15,6 +15,9 @@ Flags:
   navigationd  -> the turn-by-turn nav daemon (+ HUD maneuver chevron)
   navdestd     -> the tailnet/Siri destination endpoint (:5005)
   wifi_eager   -> the hotspot auto-reconnect watchdog
+  navsteer     -> EXPERIMENTAL route-steering: inject nav maneuvers as model turn
+                  desires (DesireHelper). Low-speed turns only (<20mph), supervised L2.
+                  Instantiated at DesireHelper init -> reboot after toggling.
 (curve slowing is the stock params SmartCruiseControlVision / SmartCruiseControlMap)
 """
 import os

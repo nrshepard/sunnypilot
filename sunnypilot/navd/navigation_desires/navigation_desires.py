@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 import cereal.messaging as messaging
 from cereal import car, log
 from openpilot.common.constants import CV
-from openpilot.common.params import Params
+from openpilot.sunnypilot.navd.nav_flags import enabled as nav_flag
 
 
 class NavigationDesires:
@@ -15,14 +15,15 @@ class NavigationDesires:
     self.sm = messaging.SubMaster(['navigationd'])
     self.desire = log.Desire.none
     self._turn_speed_limit = 20 * CV.MPH_TO_MS
-    self._params = Params()
     self.param_counter = -1
     self.nav_allowed: bool = False
 
   def update_params(self):
     self.param_counter += 1
     if self.param_counter % 60 == 0:  # every 3 seconds at 20hz
-      self.nav_allowed = self._params.get("NavDesiresAllowed", return_default=True)
+      # Build-free gate: file flag /data/navd/flags/navsteer (NOT an openpilot Params key,
+      # which would raise UnknownKeyName on a prebuilt release slot).
+      self.nav_allowed = nav_flag('navsteer')
 
   def update(self, CS: car.CarState, lateral_active: bool) -> log.Desire:
     self.update_params()
