@@ -31,7 +31,12 @@ class Navigationd:
     self.mapbox = MapboxIntegration()
     self.nav_instructions = NavigationInstructions()
 
-    self.sm = messaging.SubMaster(['carState', 'liveLocationKalman'])
+    # NOT carState: it sits at msgq's hard 15-reader cap (NUM_READERS). A 16th subscriber
+    # triggers msgq_init_subscriber's "evict ALL subscribers" path (msgq.cc) -> every
+    # carState reader (controlsd/radard/plannerd/selfdrived) is invalidated at once ->
+    # cascading commIssue -> "take control" the instant nav turns on. vEgo is sourced from
+    # liveLocationKalman (velocityCalibrated) instead, which navd already subscribes to.
+    self.sm = messaging.SubMaster(['liveLocationKalman'])
     self.pm = messaging.PubMaster(['navigationd'])
     self.rk = Ratekeeper(1)  # 1 Hz — maneuvers change at road-trip pace; HUD interpolates per-frame
     self.hb = navlog.Heartbeat("navigationd")
@@ -48,6 +53,7 @@ class Navigationd:
     self.frame: int = -1
     self.last_position: Coordinate | None = None
     self.last_bearing: float | None = None
+    self.v_ego: float = 0.0  # sourced from liveLocationKalman (carState dropped — see SubMaster note)
     self.valid: bool = False
 
     # --- background recompute worker ---------------------------------------------------
@@ -138,7 +144,7 @@ class Navigationd:
     nav_data: dict = {}
     if self.allow_navigation and self.route and self.last_position is not None:
       if progress := self.nav_instructions.get_route_progress(self.last_position.latitude, self.last_position.longitude):
-        v_ego = float(max(self.sm['carState'].vEgo, 0.0))
+        v_ego = self.v_ego  # from liveLocationKalman (carState dropped to avoid msgq 15-reader eviction)
         nav_data['upcoming_turn'] = self.nav_instructions.get_upcoming_turn_from_progress(progress, self.last_position.latitude,
                                                                                           self.last_position.longitude, v_ego)
         speed_limit, _ = progress['current_maxspeed']
@@ -213,6 +219,8 @@ class Navigationd:
         if localizer_valid:
           self.last_bearing = degrees(location.calibratedOrientationNED.value[2])
           self.last_position = Coordinate(location.positionGeodetic.value[0], location.positionGeodetic.value[1])
+          vc = location.velocityCalibrated
+          self.v_ego = float(max(vc.value[0], 0.0)) if (vc.valid and len(vc.value) > 0) else 0.0
 
         self._update_params()
         banner_instructions, progress, nav_data = self._update_navigation()
