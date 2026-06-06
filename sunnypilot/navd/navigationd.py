@@ -23,6 +23,7 @@ from openpilot.sunnypilot.navd.navigation_helpers.mapbox_integration import Mapb
 from openpilot.sunnypilot.navd.navigation_helpers.nav_instructions import NavigationInstructions
 
 RECOMPUTE_COOLDOWN_FRAMES = 30  # ~10s at 3Hz between (re)compute attempts — avoids hammering Mapbox
+MAX_PUBLISHED_MANEUVERS = 24    # T2: cap allManeuvers so the navigationd msg never nears the 1MB msgq segment
 
 
 class Navigationd:
@@ -197,12 +198,19 @@ class Navigationd:
     msg.navigationd.distanceFromRoute = nav_data.get('distance_from_route', 0.0)
     msg.navigationd.valid = self.valid
 
-    all_maneuvers = (
-      [custom.Navigationd.Maneuver.new_message(distance=m['distance'], type=m['type'], modifier=m['modifier'],
-                                               instruction=m['instruction']) for m in progress['all_maneuvers']]
-      if progress
-      else []
-    )
+    # T2: bound the published maneuver list. progress['all_maneuvers'] is the WHOLE route;
+    # a long cross-town/highway route can be hundreds of maneuvers, each with an instruction
+    # string. The 'navigationd' msgq segment is the default 1MB (no QueueSize.BIG in
+    # services.py). If the serialized message ever exceeds the segment, the publish on a
+    # build-free (prebuilt-cereal) deploy can fail/truncate — and the HUD only ever needs the
+    # next few turns. Cap to the upcoming MAX_PUBLISHED_MANEUVERS so the message stays small
+    # and bounded regardless of route length.
+    maneuvers = progress['all_maneuvers'][:MAX_PUBLISHED_MANEUVERS] if progress else []
+    all_maneuvers = [
+      custom.Navigationd.Maneuver.new_message(distance=m['distance'], type=m['type'],
+                                              modifier=m['modifier'], instruction=m['instruction'])
+      for m in maneuvers
+    ]
     msg.navigationd.allManeuvers = all_maneuvers
     return msg
 
