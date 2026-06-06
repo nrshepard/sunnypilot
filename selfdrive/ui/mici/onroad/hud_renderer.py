@@ -20,6 +20,12 @@ try:
 except Exception:
   _navlog = None
 
+# Guarded — UI must never crash if the navd tree is absent.
+try:
+  from openpilot.sunnypilot.navd.nav_flags import enabled as _nav_flag
+except Exception:
+  _nav_flag = None
+
 EventName = log.OnroadEvent.EventName
 
 # Constants
@@ -149,6 +155,7 @@ class NavManeuver(Widget):
     self._dist = 0.0
     self._ttm = 1e9
     self._frame = -1
+    self._persist = False    # flag: navhud_persist (read throttled)
     # --- telemetry counters (window-accumulated, emitted every HB_PERIOD) ---
     self._hb = _navlog.Heartbeat("nav_ui") if _navlog else None   # whole UI-proc cpu/hz/rss
     self._t_upd = 0.0        # accumulated _update_state seconds this window
@@ -189,12 +196,18 @@ class NavManeuver(Widget):
           self._dist = 0.0
       except (KeyError, AttributeError):
         self._dist = 0.0
-    # time-to-maneuver (speed-aware) — used for the drain animation only.
+    # time-to-maneuver (speed-aware) — used for the drain animation, and the windowed gate.
     v = max(float(ui_state.sm["carState"].vEgo), 0.1)
     self._ttm = self._dist / v if self._dist > 0 else 1e9
-    # Persistent visibility: show whenever there's a valid next maneuver (not just the
-    # final WINDOW_S). Bar sits full when far and drains over the last WINDOW_S seconds.
-    self._alpha.update(1.0 if self._dist > 0 else 0.0)
+    # Visibility gate. navhud_persist ON -> show whenever there's a valid next maneuver
+    # (bar full when far, drains over the last WINDOW_S). OFF -> original final-window behavior.
+    if _nav_flag is not None and self._n_frame % 30 == 0:
+      try:
+        self._persist = _nav_flag('navhud_persist')
+      except Exception:
+        self._persist = False
+    visible = (self._dist > 0) if self._persist else (self._ttm <= self.WINDOW_S)
+    self._alpha.update(1.0 if visible else 0.0)
     # telemetry: per-frame cost + UI-proc heartbeat (both gated by navlog mode)
     self._t_upd += time.perf_counter() - _t0
     self._n_frame += 1

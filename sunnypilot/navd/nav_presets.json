@@ -1,0 +1,34 @@
+{
+  "_doc": "Single source of truth for mici-nav route-steering test flags, tunables, and presets. Booleans live as files under /data/navd/flags/<name>; scalars live as files under /data/navd/<KEY> (NavParams). Read by nav_tune.py and applied to the device by ctk (preset/tune/navstate).",
+
+  "flags": {
+    "navsteer":          "MASTER: inject nav maneuvers as model turn desires (DesireHelper instantiates NavigationDesires). Read at DesireHelper init -> REBOOT after toggling.",
+    "navsteer_turn":     "Allow hard turnLeft/turnRight desires at intersections (gated < NavSteerTurnSpeed). Read live.",
+    "navsteer_keep":     "Allow keepLeft/keepRight slight-turn / fork nudges. Read live.",
+    "navsteer_handsoff": "Drop the steeringPressed requirement on keep/slight nudges (fully hands-off). Read live.",
+    "navslow":           "Longitudinal: decelerate toward an upcoming maneuver (clamps v_cruise, only-slower, jerk/decel-bounded). Read live.",
+    "navhud_persist":    "Keep the HUD maneuver cue on continuously whenever a next maneuver exists (vs the final ~10s window). Read live."
+  },
+
+  "tunables": {
+    "NavSteerTurnSpeed":   {"default": 20, "unit": "mph", "doc": "Speed gate: hard turn desire only below this."},
+    "NavSlowTargetTurn":   {"default": 15, "unit": "mph", "doc": "Target speed to reach for a hard (left/right) turn."},
+    "NavSlowTargetSlight": {"default": 25, "unit": "mph", "doc": "Target speed for a slight turn / fork / ramp."},
+    "NavSlowLookahead":    {"default": 200, "unit": "m",  "doc": "Max maneuver distance considered for slowdown."},
+    "NavSlowDecel":        {"default": 1.5, "unit": "m/s2","doc": "Comfortable deceleration cap used for the slow-point onset."}
+  },
+
+  "presets": {
+    "baseline":  {"doc": "CONTROL: everything off, stock behavior, HUD windowed.", "flags": [], "tune": {}},
+    "hud":       {"doc": "Isolate the persistent HUD change only (no steering, no slow).", "flags": ["navhud_persist"], "tune": {}},
+    "slow":      {"doc": "Isolate longitudinal decel into turns ONLY (no steering injection).", "flags": ["navslow", "navhud_persist"], "tune": {}},
+    "turn":      {"doc": "Isolate hard intersection turn-steering (no keep, no slow).", "flags": ["navsteer", "navsteer_turn", "navhud_persist"], "tune": {}},
+    "keep":      {"doc": "Isolate slight-turn/fork nudge (nudge-gated, hands-on).", "flags": ["navsteer", "navsteer_keep", "navhud_persist"], "tune": {}},
+    "handsoff":  {"doc": "Slight-turn nudge with the hands-on requirement dropped.", "flags": ["navsteer", "navsteer_keep", "navsteer_handsoff", "navhud_persist"], "tune": {}},
+    "turn+slow": {"doc": "THE intersection combo: hard turn steering + decel into it.", "flags": ["navsteer", "navsteer_turn", "navslow", "navhud_persist"], "tune": {}},
+    "full":      {"doc": "Everything on (turn + keep + handsoff + slow + persistent HUD).", "flags": ["navsteer", "navsteer_turn", "navsteer_keep", "navsteer_handsoff", "navslow", "navhud_persist"], "tune": {}}
+  },
+
+  "reboot_required_flags": ["navsteer"],
+  "managed_flags": ["navsteer", "navsteer_turn", "navsteer_keep", "navsteer_handsoff", "navslow", "navhud_persist"]
+}
