@@ -36,7 +36,13 @@ class Navigationd:
     # carState reader (controlsd/radard/plannerd/selfdrived) is invalidated at once ->
     # cascading commIssue -> "take control" the instant nav turns on. vEgo is sourced from
     # liveLocationKalman (velocityCalibrated) instead, which navd already subscribes to.
-    self.sm = messaging.SubMaster(['liveLocationKalman'])
+    #
+    # T1: liveLocationKalman is LEGACY on release-mici — it's in services.py but has no
+    # publisher (locationd now emits livePose, which carries no geodetic position). Subscribing
+    # to it means localizer_valid is never true -> navd is blind (no position, v_ego stuck at 0).
+    # Source everything from gpsLocationExternal (published by ubloxd; has latitude/longitude/
+    # bearingDeg/speed). Low subscriber count, so no msgq reader-cap risk either.
+    self.sm = messaging.SubMaster(['gpsLocationExternal'])
     self.pm = messaging.PubMaster(['navigationd'])
     self.rk = Ratekeeper(1)  # 1 Hz — maneuvers change at road-trip pace; HUD interpolates per-frame
     self.hb = navlog.Heartbeat("navigationd")
@@ -53,7 +59,7 @@ class Navigationd:
     self.frame: int = -1
     self.last_position: Coordinate | None = None
     self.last_bearing: float | None = None
-    self.v_ego: float = 0.0  # sourced from liveLocationKalman (carState dropped — see SubMaster note)
+    self.v_ego: float = 0.0  # sourced from gpsLocationExternal.speed (T1)
     self.valid: bool = False
 
     # --- background recompute worker ---------------------------------------------------
@@ -144,7 +150,7 @@ class Navigationd:
     nav_data: dict = {}
     if self.allow_navigation and self.route and self.last_position is not None:
       if progress := self.nav_instructions.get_route_progress(self.last_position.latitude, self.last_position.longitude):
-        v_ego = self.v_ego  # from liveLocationKalman (carState dropped to avoid msgq 15-reader eviction)
+        v_ego = self.v_ego  # from gpsLocationExternal.speed (T1)
         nav_data['upcoming_turn'] = self.nav_instructions.get_upcoming_turn_from_progress(progress, self.last_position.latitude,
                                                                                           self.last_position.longitude, v_ego)
         speed_limit, _ = progress['current_maxspeed']
@@ -213,14 +219,14 @@ class Navigationd:
       try:
         self.hb.tick()
         self.sm.update(0)
-        location = self.sm['liveLocationKalman']
-        localizer_valid = location.positionGeodetic.valid if location else False
+        gps = self.sm['gpsLocationExternal']
+        # bit0 of flags = has-fix in the ublox gps message
+        localizer_valid = bool(gps.flags & 1) if gps else False
 
         if localizer_valid:
-          self.last_bearing = degrees(location.calibratedOrientationNED.value[2])
-          self.last_position = Coordinate(location.positionGeodetic.value[0], location.positionGeodetic.value[1])
-          vc = location.velocityCalibrated
-          self.v_ego = float(max(vc.value[0], 0.0)) if (vc.valid and len(vc.value) > 0) else 0.0
+          self.last_bearing = float(gps.bearingDeg)
+          self.last_position = Coordinate(float(gps.latitude), float(gps.longitude))
+          self.v_ego = float(max(gps.speed, 0.0))
 
         self._update_params()
         banner_instructions, progress, nav_data = self._update_navigation()
