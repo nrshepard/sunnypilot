@@ -11,6 +11,16 @@ from openpilot.sunnypilot.selfdrive.car.sync_car_list_param import CAR_LIST_JSON
 
 ONROAD_BRIGHTNESS_MIGRATION_VERSION: str = "1.0"
 ONROAD_BRIGHTNESS_TIMER_MIGRATION_VERSION: str = "1.0"
+SPEED_LIMIT_DEFAULTS_MIGRATION_VERSION: str = "1.0"
+
+# Speed Limit Assist defaults applied once on first boot of this build.
+# Values mirror the SpeedLimitMode / SpeedLimitOffsetType enums:
+#   SpeedLimitMode      3 = Assist (actively track the posted limit)
+#   SpeedLimitOffsetType 1 = Fixed
+#   SpeedLimitValueOffset 5 = +5 (mph in US units) over the posted limit
+SPEED_LIMIT_DEFAULT_MODE = 3
+SPEED_LIMIT_DEFAULT_OFFSET_TYPE = 1
+SPEED_LIMIT_DEFAULT_OFFSET_VALUE = 5
 
 # index → seconds mapping for OnroadScreenOffTimer (SSoT)
 ONROAD_BRIGHTNESS_TIMER_VALUES = {0: 3, 1: 5, 2: 7, 3: 10, 4: 15, 5: 30, **{i: (i - 5) * 60 for i in range(6, 16)}}
@@ -78,5 +88,18 @@ def run_migration(_params):
       cloudlog.info(log_str + f" Setting OnroadScreenOffTimerMigrated to {ONROAD_BRIGHTNESS_TIMER_MIGRATION_VERSION}")
     except Exception as e:
       cloudlog.exception(f"Error migrating OnroadScreenOffTimer: {e}")
+
+  # apply Speed Limit Assist defaults once (follow posted limit, +5 over)
+  if _params.get("SpeedLimitDefaultsMigrated") != SPEED_LIMIT_DEFAULTS_MIGRATION_VERSION:
+    try:
+      _params.put("SpeedLimitMode", SPEED_LIMIT_DEFAULT_MODE)
+      _params.put("SpeedLimitOffsetType", SPEED_LIMIT_DEFAULT_OFFSET_TYPE)
+      _params.put("SpeedLimitValueOffset", SPEED_LIMIT_DEFAULT_OFFSET_VALUE)
+      _params.put("SpeedLimitDefaultsMigrated", SPEED_LIMIT_DEFAULTS_MIGRATION_VERSION)
+      cloudlog.info("params_migration: applied Speed Limit Assist defaults "
+                    f"(mode={SPEED_LIMIT_DEFAULT_MODE}, offset=+{SPEED_LIMIT_DEFAULT_OFFSET_VALUE}). "
+                    f"Set SpeedLimitDefaultsMigrated to {SPEED_LIMIT_DEFAULTS_MIGRATION_VERSION}")
+    except Exception as e:
+      cloudlog.exception(f"Error applying Speed Limit Assist defaults: {e}")
 
   _migrate_car_platform_bundle(_params)
