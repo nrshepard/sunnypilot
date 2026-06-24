@@ -17,7 +17,11 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
-A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
+# Item 3 (stop-and-go): softened the low-speed max-accel cap so launches off a
+# stop ramp up gently instead of surging. Highway accel (25-40 m/s) unchanged.
+#   standstill 0 m/s : 1.6 -> 1.2
+#   10 m/s (~22 mph) : 1.2 -> 1.0
+A_CRUISE_MAX_VALS = [1.2, 1.0, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
